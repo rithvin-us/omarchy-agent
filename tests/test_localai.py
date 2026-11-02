@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import json
-import socket
 import unittest
 import urllib.error
 from typing import Any
@@ -21,7 +20,6 @@ from omarchy_agent.integrations.localai import (
     ModelInfo,
 )
 from omarchy_agent.security.audit import AuditLogger, get_audit_logger, set_audit_logger
-from omarchy_agent.security.permissions import CapabilityNotImplemented
 
 
 class FakeResponse:
@@ -36,7 +34,17 @@ class FakeResponse:
             return self._body
         return self._body[:amount]
 
-    def __enter__(self) -> "FakeResponse":
+    def readline(self, amount: int | None = None) -> bytes:
+        if not self._body:
+            return b""
+        index = self._body.find(b"\n")
+        end = len(self._body) if index < 0 else index + 1
+        if amount is not None:
+            end = min(end, amount)
+        line, self._body = self._body[:end], self._body[end:]
+        return line
+
+    def __enter__(self) -> FakeResponse:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -58,6 +66,21 @@ class FakeOpener:
         if callable(self.result):
             return self.result()
         return self.result
+
+
+class SequenceOpener:
+    def __init__(self, results: list[Any]) -> None:
+        self.results = list(results)
+        self.requests: list[Any] = []
+        self.timeouts: list[float] = []
+
+    def open(self, request: Any, timeout: float | None = None) -> Any:
+        self.requests.append(request)
+        self.timeouts.append(timeout or 0)
+        result = self.results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 def client_with(result: Any, **kwargs: Any) -> tuple[LocalAIClient, FakeOpener]:
@@ -105,15 +128,13 @@ class EndpointValidationTests(unittest.TestCase):
             "http://api.openai.com/v1",
             "http://example.invalid/v1",
         ):
-            with self.subTest(url=url):
-                with self.assertRaises(LocalAIConfigurationError):
-                    LocalAIClient(url)
+            with self.subTest(url=url), self.assertRaises(LocalAIConfigurationError):
+                LocalAIClient(url)
 
     def test_rejects_unsupported_scheme(self) -> None:
         for url in ("ftp://127.0.0.1/v1", "file:///etc/passwd", "unix:///var/run/docker.sock"):
-            with self.subTest(url=url):
-                with self.assertRaises(LocalAIConfigurationError):
-                    LocalAIClient(url)
+            with self.subTest(url=url), self.assertRaises(LocalAIConfigurationError):
+                LocalAIClient(url)
 
     def test_trailing_slash_is_normalised(self) -> None:
         self.assertEqual(
@@ -219,7 +240,7 @@ class ConnectionFailureTests(unittest.TestCase):
         self.assertIn("never starts or", status.hint or "")
 
     def test_timeout_is_reported_not_raised(self) -> None:
-        client, _opener = client_with(socket.timeout("timed out"))
+        client, _opener = client_with(TimeoutError("timed out"))
         status = client.check_connection()
         self.assertFalse(status.reachable)
         self.assertIsNotNone(status.error)
@@ -304,17 +325,80 @@ class MalformedResponseTests(unittest.TestCase):
         self.assertIn("exceeded", str(raised.exception))
 
 
-class InferenceIsNotImplementedTests(unittest.TestCase):
-    def test_chat_completion_is_refused_by_policy(self) -> None:
+class ChatCompletionTests(unittest.TestCase):
+    def test_posts_completion_and_returns_assistant_message(self) -> None:
+        payload = {"choices": [{"message": {"role": "assistant", "content": "hello there"}}]}
+        opener = SequenceOpener([json_response(MODELS_PAYLOAD), json_response(payload)])
         client = LocalAIClient()
-        with self.assertRaises(CapabilityNotImplemented):
-            client.chat_completion([{"role": "user", "content": "hello"}])
+        client._opener = opener  # noqa: SLF001
+        result = client.chat_completion(
+            [{"role": "user", "content": "hello"}], model="qwen3-4b-q8_0"
+        )
+        self.assertEqual(result["content"], "hello there")
+        request = opener.requests[1]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.full_url, "http://127.0.0.1:8080/v1/chat/completions")
+        body = json.loads(request.data)
+        self.assertEqual(body["model"], "qwen3-4b-q8_0")
+        self.assertEqual(body["messages"][0]["content"], "hello")
+        self.assertEqual(opener.timeouts[1], client.inference_timeout)
 
-    def test_chat_completion_does_not_open_a_connection(self) -> None:
-        client, opener = client_with(lambda: json_response(MODELS_PAYLOAD))
-        with self.assertRaises(CapabilityNotImplemented):
-            client.chat_completion([{"role": "user", "content": "hello"}], model="anything")
-        self.assertEqual(opener.requests, [])
+    def test_streams_visible_text_and_accumulates_tool_call(self) -> None:
+        events = [
+            {"choices": [{"delta": {"content": "hello"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": '{\\"path\\":\\"x.py\\"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+        stream = (
+            b"".join(b"data: " + json.dumps(item).encode() + b"\n" for item in events)
+            + b"data: [DONE]\n"
+        )
+        opener = SequenceOpener([json_response(MODELS_PAYLOAD), FakeResponse(stream)])
+        client = LocalAIClient()
+        client._opener = opener  # noqa: SLF001
+        fragments: list[str] = []
+        result = client.chat_completion(
+            [{"role": "user", "content": "hello"}],
+            model="qwen3-4b-q8_0",
+            on_delta=fragments.append,
+        )
+        self.assertEqual(fragments, ["hello"])
+        self.assertEqual(result["tool_calls"][0]["id"], "call_1")
+        self.assertIn("read_file", result["tool_calls"][0]["function"]["name"])
+
+    def test_prompt_is_redacted_from_audit(self) -> None:
+        previous = get_audit_logger()
+        logger = AuditLogger()
+        set_audit_logger(logger)
+        try:
+            payload = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            opener = SequenceOpener([json_response(MODELS_PAYLOAD), json_response(payload)])
+            client = LocalAIClient()
+            client._opener = opener  # noqa: SLF001
+            secret_prompt = "private prompt content"
+            client.chat_completion(
+                [{"role": "user", "content": secret_prompt}], model="qwen3-4b-q8_0"
+            )
+            serialized = json.dumps(logger.entries()[-1].as_dict())
+            self.assertNotIn(secret_prompt, serialized)
+        finally:
+            set_audit_logger(previous)
 
 
 class LocalAIAuditTests(unittest.TestCase):

@@ -18,7 +18,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -182,7 +182,7 @@ class Task:
     completed_at: str | None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Task":
+    def from_row(cls, row: sqlite3.Row) -> Task:
         return cls(
             id=row["id"],
             title=row["title"],
@@ -219,7 +219,7 @@ class MemoryRecord:
     updated_at: str
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "MemoryRecord":
+    def from_row(cls, row: sqlite3.Row) -> MemoryRecord:
         return cls(
             id=row["id"],
             category=row["category"],
@@ -253,7 +253,7 @@ class Conversation:
     updated_at: str
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Conversation":
+    def from_row(cls, row: sqlite3.Row) -> Conversation:
         return cls(
             id=row["id"],
             title=row["title"],
@@ -282,7 +282,7 @@ class Message:
     created_at: str
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Message":
+    def from_row(cls, row: sqlite3.Row) -> Message:
         return cls(
             id=row["id"],
             conversation_id=row["conversation_id"],
@@ -316,7 +316,7 @@ class ToolExecution:
     duration_ms: int
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "ToolExecution":
+    def from_row(cls, row: sqlite3.Row) -> ToolExecution:
         return cls(
             id=row["id"],
             task_id=row["task_id"],
@@ -354,7 +354,7 @@ class Approval:
     resolved_at: str | None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Approval":
+    def from_row(cls, row: sqlite3.Row) -> Approval:
         return cls(
             id=row["id"],
             action=row["action"],
@@ -498,7 +498,7 @@ class Database:
         *,
         create: bool = False,
         busy_timeout_ms: int = 5000,
-    ) -> "Database":
+    ) -> Database:
         """Open (and optionally create) the database.
 
         ``create=False`` -- the default -- never touches the filesystem layout:
@@ -515,10 +515,8 @@ class Database:
 
         if create and not target.parent.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            try:
+            with suppress(OSError):
                 os.chmod(target.parent, 0o700)
-            except OSError:
-                pass
 
         try:
             connection = sqlite3.connect(
@@ -583,12 +581,10 @@ class Database:
         return int(self._connection.execute("PRAGMA user_version").fetchone()[0])
 
     def close(self) -> None:
-        try:
+        with suppress(sqlite3.Error):
             self._connection.close()
-        except sqlite3.Error:
-            pass
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -736,7 +732,8 @@ class Database:
                 "INSERT INTO memories (category, key, content, tags, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (category, key) DO UPDATE SET "
-                "content = excluded.content, tags = excluded.tags, updated_at = excluded.updated_at",
+                "content = excluded.content, tags = excluded.tags, "
+                "updated_at = excluded.updated_at",
                 (clean_category, clean_key, clean_content, encoded_tags, now, now),
             )
         record = self.get_memory(clean_category, clean_key)
@@ -967,7 +964,9 @@ class Database:
             if table not in present:
                 continue
             # ``table`` comes from the module-level constant, never from input.
-            row = self._connection.execute(f"SELECT COUNT(*) AS total FROM {table}").fetchone()
+            row = self._connection.execute(
+                f"SELECT COUNT(*) AS total FROM {table}"  # noqa: S608 - constant
+            ).fetchone()
             counts[table] = int(row["total"])
         return counts
 
@@ -988,12 +987,8 @@ class Database:
             "permissions": mode,
             "schema_version": self.schema_version,
             "expected_schema_version": SCHEMA_VERSION,
-            "foreign_keys": bool(
-                self._connection.execute("PRAGMA foreign_keys").fetchone()[0]
-            ),
-            "journal_mode": str(
-                self._connection.execute("PRAGMA journal_mode").fetchone()[0]
-            ),
+            "foreign_keys": bool(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]),
+            "journal_mode": str(self._connection.execute("PRAGMA journal_mode").fetchone()[0]),
             "tables": self.table_names(),
             "row_counts": self.row_counts(),
         }

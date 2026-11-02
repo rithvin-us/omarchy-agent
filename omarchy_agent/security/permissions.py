@@ -19,7 +19,7 @@ A capability is in exactly one of three states:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 __all__ = [
     "Capability",
@@ -31,16 +31,16 @@ __all__ = [
 ]
 
 
-class CapabilityState(str, Enum):
+class CapabilityState(StrEnum):
     ALLOWED = "allowed"
     NOT_IMPLEMENTED = "not_implemented"
     DENIED = "denied"
 
 
-class Capability(str, Enum):
+class Capability(StrEnum):
     """Every action the agent can even ask about."""
 
-    # --- implemented in v0.1 -------------------------------------------
+    # --- implemented ---------------------------------------------------
     FS_READ = "filesystem.read"
     FS_LIST = "filesystem.list"
     FS_SEARCH = "filesystem.search"
@@ -53,7 +53,7 @@ class Capability(str, Enum):
     TASK_READ = "task.read"
     AUDIT_WRITE = "audit.write"
 
-    # --- planned, not implemented in v0.1 ------------------------------
+    # --- planned, not implemented -------------------------------------
     FS_WRITE = "filesystem.write"
     FS_DELETE = "filesystem.delete"
     TERMINAL_EXEC = "terminal.execute"
@@ -70,7 +70,7 @@ class Capability(str, Enum):
     PACKAGE_INSTALL = "system.package_install"
     DOCKER_CONTROL = "docker.control"
     SERVICE_INSTALL = "system.service_install"
-    SECRET_READ = "secret.read"
+    SECRET_READ = "secret.read"  # noqa: S105 - permission capability name
     NETWORK_BIND_PUBLIC = "network.bind_public"
 
 
@@ -89,7 +89,7 @@ _STATES: dict[Capability, CapabilityState] = {
     Capability.FS_WRITE: CapabilityState.NOT_IMPLEMENTED,
     Capability.FS_DELETE: CapabilityState.NOT_IMPLEMENTED,
     Capability.TERMINAL_EXEC: CapabilityState.NOT_IMPLEMENTED,
-    Capability.LOCALAI_INFERENCE: CapabilityState.NOT_IMPLEMENTED,
+    Capability.LOCALAI_INFERENCE: CapabilityState.ALLOWED,
     Capability.BROWSER_CONTROL: CapabilityState.NOT_IMPLEMENTED,
     Capability.DESKTOP_INPUT: CapabilityState.NOT_IMPLEMENTED,
     Capability.DESKTOP_SCREENSHOT: CapabilityState.NOT_IMPLEMENTED,
@@ -118,8 +118,10 @@ _NOTES: dict[Capability, str] = {
     Capability.AUDIT_WRITE: "Append tool-execution metadata to the audit log.",
     Capability.FS_WRITE: "Planned: create or modify workspace files.",
     Capability.FS_DELETE: "Planned: delete workspace files.",
-    Capability.TERMINAL_EXEC: "Planned: run an allowlisted command. Never a model-supplied shell string.",
-    Capability.LOCALAI_INFERENCE: "Planned: chat completion and tool calling against LocalAI.",
+    Capability.TERMINAL_EXEC: (
+        "Planned: run an allowlisted command. Never a model-supplied shell string."
+    ),
+    Capability.LOCALAI_INFERENCE: "Run local chat completions and validated read-only tools.",
     Capability.BROWSER_CONTROL: "Planned: browser automation.",
     Capability.DESKTOP_INPUT: "Planned: mouse and keyboard control via Wayland tooling.",
     Capability.DESKTOP_SCREENSHOT: "Planned: screen capture via grim/slurp.",
@@ -128,7 +130,9 @@ _NOTES: dict[Capability, str] = {
     Capability.REMOTE_ACCESS: "Planned: access from a phone over a private network only.",
     Capability.PRIVILEGE_ESCALATION: "Forbidden: no sudo, no privileged system changes.",
     Capability.PACKAGE_INSTALL: "Forbidden: no pacman, no global package installation.",
-    Capability.DOCKER_CONTROL: "Forbidden: never start, stop or reconfigure containers; never touch the Docker socket.",
+    Capability.DOCKER_CONTROL: (
+        "Forbidden: never start, stop or reconfigure containers; never touch the Docker socket."
+    ),
     Capability.SERVICE_INSTALL: "Forbidden: no systemd units, cron jobs or background daemons.",
     Capability.SECRET_READ: "Forbidden: no SSH keys, credential stores or password databases.",
     Capability.NETWORK_BIND_PUBLIC: "Forbidden: never bind a listener to 0.0.0.0.",
@@ -185,9 +189,7 @@ class PermissionPolicy:
             return
         note = _NOTES.get(capability, "no description available")
         if state is CapabilityState.NOT_IMPLEMENTED:
-            raise CapabilityNotImplemented(
-                capability, f"not implemented in this version -- {note}"
-            )
+            raise CapabilityNotImplemented(capability, f"not implemented in this version -- {note}")
         raise PermissionDenied(capability, f"denied by project policy -- {note}")
 
     def inventory(self) -> list[CapabilityInfo]:
@@ -202,9 +204,7 @@ class PermissionPolicy:
         ]
 
     def grouped_inventory(self) -> dict[str, list[dict[str, str]]]:
-        grouped: dict[str, list[dict[str, str]]] = {
-            state.value: [] for state in CapabilityState
-        }
+        grouped: dict[str, list[dict[str, str]]] = {state.value: [] for state in CapabilityState}
         for info in self.inventory():
             grouped[info.state.value].append(info.as_dict())
         return grouped

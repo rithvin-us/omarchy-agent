@@ -59,9 +59,7 @@ class FilesystemError(RuntimeError):
 
 class FileTooLarge(FilesystemError):
     def __init__(self, path: Path, size: int, limit: int) -> None:
-        super().__init__(
-            f"file is {size} bytes which exceeds the {limit} byte read limit: {path}"
-        )
+        super().__init__(f"file is {size} bytes which exceeds the {limit} byte read limit: {path}")
         self.path = str(path)
         self.size = size
         self.limit = limit
@@ -468,8 +466,7 @@ def get_file_info(
     resolved = active._resolve(path)
     if not active.is_within_roots(resolved):
         raise PathSecurityError(
-            "path is outside the permitted workspace roots "
-            f"({', '.join(active.describe_roots())})",
+            f"path is outside the permitted workspace roots ({', '.join(active.describe_roots())})",
             resolved,
         )
     if not resolved.exists() and not resolved.is_symlink():
@@ -585,9 +582,7 @@ def search_files(
 
             if lowered in name.lower():
                 matches.append(
-                    SearchMatch(
-                        path=str(candidate), match_type="name", line_number=None, line=None
-                    )
+                    SearchMatch(path=str(candidate), match_type="name", line_number=None, line=None)
                 )
                 if len(matches) >= max_results:
                     truncated = True

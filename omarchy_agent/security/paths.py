@@ -222,9 +222,9 @@ class PathPolicy:
     @classmethod
     def from_paths(
         cls,
-        paths: "list[str | os.PathLike[str]] | tuple[str | os.PathLike[str], ...]",
+        paths: list[str | os.PathLike[str]] | tuple[str | os.PathLike[str], ...],
         max_file_bytes: int = MAX_FILE_BYTES,
-    ) -> "PathPolicy":
+    ) -> PathPolicy:
         """Build a policy from arbitrary path-likes, resolving each one."""
         roots: list[Path] = []
         for raw in paths:
@@ -273,10 +273,7 @@ class PathPolicy:
         for pattern in SENSITIVE_ALLOWLIST_PATTERNS:
             if fnmatch.fnmatch(lowered, pattern.lower()):
                 return False
-        for pattern in SENSITIVE_FILE_PATTERNS:
-            if fnmatch.fnmatch(lowered, pattern.lower()):
-                return True
-        return False
+        return any(fnmatch.fnmatch(lowered, pattern.lower()) for pattern in SENSITIVE_FILE_PATTERNS)
 
     # -- the single entry point used by the bridge -----------------------
 
@@ -333,15 +330,11 @@ class PathPolicy:
         parent_parts = relative_parts[:-1] if relative_parts else ()
         for part in parent_parts:
             if self.is_blocked_directory_name(part):
-                raise PathSecurityError(
-                    f"path lies inside a blocked directory: {part!r}", resolved
-                )
+                raise PathSecurityError(f"path lies inside a blocked directory: {part!r}", resolved)
         if relative_parts:
             leaf = relative_parts[-1]
             if resolved.is_dir() and self.is_blocked_directory_name(leaf):
-                raise PathSecurityError(
-                    f"path is a blocked directory: {leaf!r}", resolved
-                )
+                raise PathSecurityError(f"path is a blocked directory: {leaf!r}", resolved)
             if not resolved.is_dir() and self.is_sensitive_file_name(leaf):
                 raise PathSecurityError(
                     "refusing to access a file that may contain secrets", resolved

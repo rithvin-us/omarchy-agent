@@ -116,7 +116,7 @@ class TaskManager:
         create: bool = False,
         mirror_audit_to_database: bool = False,
         audit_logger: AuditLogger | None = None,
-    ) -> "TaskManager":
+    ) -> TaskManager:
         """Open the store. ``create=False`` never touches the filesystem layout."""
         database = Database.open(path, create=create)
         manager = cls(database, audit_logger=audit_logger)
@@ -131,7 +131,7 @@ class TaskManager:
     def close(self) -> None:
         self._database.close()
 
-    def __enter__(self) -> "TaskManager":
+    def __enter__(self) -> TaskManager:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -300,4 +300,3 @@ class TaskManager:
         info["data_directory"] = str(default_data_directory())
         info["task_counts"] = self._database.count_tasks()
         return info
-

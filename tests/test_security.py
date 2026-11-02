@@ -62,9 +62,8 @@ class PathPolicyTests(unittest.TestCase):
             f"{self.root}/src/../../../../etc/passwd",
         ]
         for attack in attacks:
-            with self.subTest(attack=str(attack)):
-                with self.assertRaises(PathSecurityError):
-                    self.policy.resolve_within_roots(attack, must_exist=False)
+            with self.subTest(attack=str(attack)), self.assertRaises(PathSecurityError):
+                self.policy.resolve_within_roots(attack, must_exist=False)
 
     def test_rejects_nul_byte_in_path(self) -> None:
         with self.assertRaises(PathSecurityError):
@@ -89,9 +88,7 @@ class PathPolicyTests(unittest.TestCase):
     def test_allows_symlink_that_stays_inside_the_root(self) -> None:
         link = self.root / "inside-link"
         link.symlink_to(self.root / "src" / "main.py")
-        self.assertEqual(
-            self.policy.resolve_within_roots(link), self.root / "src" / "main.py"
-        )
+        self.assertEqual(self.policy.resolve_within_roots(link), self.root / "src" / "main.py")
 
     def test_rejects_path_inside_blocked_directory(self) -> None:
         git_directory = self.root / ".git"
@@ -149,9 +146,7 @@ class PathPolicyTests(unittest.TestCase):
     def test_missing_path_is_refused_when_existence_required(self) -> None:
         with self.assertRaises(PathSecurityError):
             self.policy.resolve_within_roots(self.root / "nope.txt")
-        self.assertTrue(
-            self.policy.resolve_within_roots(self.root / "nope.txt", must_exist=False)
-        )
+        self.assertTrue(self.policy.resolve_within_roots(self.root / "nope.txt", must_exist=False))
 
     def test_empty_root_set_refuses_everything(self) -> None:
         empty = PathPolicy(roots=())
@@ -188,6 +183,7 @@ class PermissionPolicyTests(unittest.TestCase):
             Capability.SYSTEM_INFO,
             Capability.GIT_INSPECT,
             Capability.LOCALAI_INSPECT,
+            Capability.LOCALAI_INFERENCE,
             Capability.MEMORY_WRITE,
             Capability.TASK_WRITE,
             Capability.AUDIT_WRITE,
@@ -204,7 +200,6 @@ class PermissionPolicyTests(unittest.TestCase):
             Capability.BROWSER_CONTROL,
             Capability.DESKTOP_INPUT,
             Capability.DESKTOP_SCREENSHOT,
-            Capability.LOCALAI_INFERENCE,
         ):
             with self.subTest(capability=capability):
                 self.assertFalse(self.policy.is_allowed(capability))
@@ -226,9 +221,7 @@ class PermissionPolicyTests(unittest.TestCase):
                 self.assertNotIsInstance(raised.exception, CapabilityNotImplemented)
 
     def test_denied_is_not_reported_as_not_implemented(self) -> None:
-        self.assertIs(
-            self.policy.state_of(Capability.DOCKER_CONTROL), CapabilityState.DENIED
-        )
+        self.assertIs(self.policy.state_of(Capability.DOCKER_CONTROL), CapabilityState.DENIED)
         self.assertIs(
             self.policy.state_of(Capability.TERMINAL_EXEC), CapabilityState.NOT_IMPLEMENTED
         )
@@ -394,9 +387,7 @@ class AuditLoggerTests(unittest.TestCase):
 
     def test_jsonl_sink_refuses_a_missing_directory(self) -> None:
         logger = AuditLogger()
-        self.assertFalse(
-            logger.add_jsonl_file_sink("/nonexistent-directory-xyz/audit.log")
-        )
+        self.assertFalse(logger.add_jsonl_file_sink("/nonexistent-directory-xyz/audit.log"))
 
     def test_a_broken_sink_does_not_break_the_call(self) -> None:
         def broken(_entry: object) -> None:

@@ -164,9 +164,7 @@ class TaskCrudTests(DatabaseTestCase):
 
     def test_update_fields(self) -> None:
         task = self.database.create_task("original")
-        updated = self.database.update_task(
-            task.id, title="renamed", description="new description"
-        )
+        updated = self.database.update_task(task.id, title="renamed", description="new description")
         self.assertEqual(updated.title, "renamed")
         self.assertEqual(updated.description, "new description")
         self.assertEqual(updated.id, task.id)
@@ -216,13 +214,21 @@ class TaskCrudTests(DatabaseTestCase):
         self.assertIsNone(self.database.get_task(4242))
 
     def test_check_constraint_blocks_direct_bad_status(self) -> None:
-        with self.assertRaises(sqlite3.IntegrityError):
-            with self.database.transaction() as connection:
-                connection.execute(
-                    "INSERT INTO tasks (title, description, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    ("direct", "", "nonsense", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
-                )
+        with (
+            self.assertRaises(sqlite3.IntegrityError),
+            self.database.transaction() as connection,
+        ):
+            connection.execute(
+                "INSERT INTO tasks (title, description, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "direct",
+                    "",
+                    "nonsense",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
 
 
 class MemoryCrudTests(DatabaseTestCase):
@@ -384,13 +390,15 @@ class ConversationTests(DatabaseTestCase):
             self.database.add_message(9999, "user", "orphan")
 
     def test_foreign_key_is_enforced_on_direct_insert(self) -> None:
-        with self.assertRaises(sqlite3.IntegrityError):
-            with self.database.transaction() as connection:
-                connection.execute(
-                    "INSERT INTO messages (conversation_id, role, content, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (4242, "user", "orphan", "2026-01-01T00:00:00+00:00"),
-                )
+        with (
+            self.assertRaises(sqlite3.IntegrityError),
+            self.database.transaction() as connection,
+        ):
+            connection.execute(
+                "INSERT INTO messages (conversation_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (4242, "user", "orphan", "2026-01-01T00:00:00+00:00"),
+            )
 
     def test_deleting_a_conversation_cascades(self) -> None:
         conversation = self.database.create_conversation("chat")
@@ -453,14 +461,22 @@ class ToolExecutionAndApprovalTests(DatabaseTestCase):
 
 class TransactionTests(DatabaseTestCase):
     def test_rollback_on_exception(self) -> None:
-        with self.assertRaises(RuntimeError):
-            with self.database.transaction() as connection:
-                connection.execute(
-                    "INSERT INTO tasks (title, description, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    ("rolled back", "", "pending", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
-                )
-                raise RuntimeError("abort")
+        with (
+            self.assertRaises(RuntimeError),
+            self.database.transaction() as connection,
+        ):
+            connection.execute(
+                "INSERT INTO tasks (title, description, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "rolled back",
+                    "",
+                    "pending",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            raise RuntimeError("abort")
         self.assertEqual(self.database.row_counts()["tasks"], 0)
 
     def test_commit_on_success(self) -> None:
@@ -468,7 +484,13 @@ class TransactionTests(DatabaseTestCase):
             connection.execute(
                 "INSERT INTO tasks (title, description, status, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                ("committed", "", "pending", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+                (
+                    "committed",
+                    "",
+                    "pending",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
             )
         self.assertEqual(self.database.row_counts()["tasks"], 1)
 
@@ -547,9 +569,7 @@ class DefaultLocationTests(unittest.TestCase):
         previous = os.environ.get("OMARCHY_AGENT_DATA_DIR")
         try:
             os.environ["OMARCHY_AGENT_DATA_DIR"] = "/tmp/omarchy-agent-test-dir"
-            self.assertEqual(
-                default_data_directory(), Path("/tmp/omarchy-agent-test-dir")
-            )
+            self.assertEqual(default_data_directory(), Path("/tmp/omarchy-agent-test-dir"))
             self.assertEqual(
                 default_database_path(),
                 Path("/tmp/omarchy-agent-test-dir/agent.sqlite3"),

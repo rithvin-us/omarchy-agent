@@ -1,10 +1,4 @@
-"""Minimal LocalAI client.
-
-Scope in v0.1: confirm the API answers and list the models it has installed.
-Inference is intentionally *not* implemented -- the ``localai.inference``
-capability is ``NOT_IMPLEMENTED`` in the permission policy, and
-:meth:`LocalAIClient.chat_completion` refuses through that policy rather than
-sending a request.
+"""Small, loopback-only LocalAI client for inspection and chat completion.
 
 Constraints enforced here:
 
@@ -24,11 +18,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -51,7 +45,9 @@ __all__ = [
 DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
 DEFAULT_CONNECT_TIMEOUT = 2.0
 DEFAULT_READ_TIMEOUT = 5.0
+DEFAULT_INFERENCE_TIMEOUT = 180.0
 MAX_RESPONSE_BYTES = 1 * 1024 * 1024
+MAX_REQUEST_BYTES = 512 * 1024
 LOOPBACK_HOSTNAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost"})
 
 
@@ -130,11 +126,10 @@ def _is_loopback_host(host: str) -> bool:
 
 
 class LocalAIClient:
-    """A small, read-only client for a LocalAI instance on loopback.
+    """A small client for inspection and chat on a LocalAI loopback instance.
 
-    The public surface is deliberately narrow so that inference and tool
-    calling can be added later as new methods guarded by the same policy,
-    without changing how connectivity and model discovery work.
+    Inspection and inference share the same endpoint validation, transport
+    limits, model discovery, permission policy, and audit boundary.
     """
 
     def __init__(
@@ -143,6 +138,7 @@ class LocalAIClient:
         *,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         read_timeout: float = DEFAULT_READ_TIMEOUT,
+        inference_timeout: float = DEFAULT_INFERENCE_TIMEOUT,
         policy: PermissionPolicy | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -160,6 +156,7 @@ class LocalAIClient:
         self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self.connect_timeout = float(connect_timeout)
         self.read_timeout = float(read_timeout)
+        self.inference_timeout = float(inference_timeout)
         self._policy = policy or default_permission_policy()
         # An opener with an empty ProxyHandler: a system proxy must never
         # intercept a loopback request.
@@ -176,7 +173,7 @@ class LocalAIClient:
         Raises :class:`LocalAIError` for transport problems and for bodies that
         are not valid JSON objects.
         """
-        request = urllib.request.Request(
+        request = urllib.request.Request(  # noqa: S310 - scheme validated in __init__
             self._url(path),
             method="GET",
             headers={"Accept": "application/json", "User-Agent": "omarchy-agent/0.1"},
@@ -205,7 +202,7 @@ class LocalAIClient:
             return status, payload
         except urllib.error.URLError as exc:
             raise LocalAIError(f"cannot reach LocalAI at {self.base_url}: {exc.reason}") from exc
-        except (TimeoutError, socket.timeout) as exc:
+        except TimeoutError as exc:
             raise LocalAIError(
                 f"LocalAI at {self.base_url} did not respond within {self.read_timeout}s"
             ) from exc
@@ -311,32 +308,299 @@ class LocalAIClient:
                 if model.id == preferred:
                     return model.id
             available = ", ".join(model.id for model in models[:10])
-            raise LocalAIError(
-                f"model {preferred!r} is not installed; available: {available}"
-            )
+            raise LocalAIError(f"model {preferred!r} is not installed; available: {available}")
         return models[0].id
 
-    # -- reserved for a later milestone ----------------------------------
+    # -- chat completion -------------------------------------------------
 
+    @audited(
+        "localai.chat_completion",
+        Capability.LOCALAI_INFERENCE,
+        redact_params=("messages",),
+    )
     def chat_completion(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         model: str | None = None,
         tools: list[dict[str, Any]] | None = None,
-        **_options: Any,
-    ) -> Any:
-        """Planned interface for inference and tool calling.
+        on_delta: Callable[[str], None] | None = None,
+        on_usage: Callable[[dict[str, int | bool]], None] | None = None,
+        max_tokens: int = 600,
+        temperature: float = 0.2,
+    ) -> dict[str, Any]:
+        """Request a chat completion, optionally streaming visible answer text.
 
-        This method exists so the integration boundary is fixed now: callers
-        in a later milestone will not need to change shape. It refuses through
-        the central permission policy, so enabling it is a one-line change in
-        :mod:`omarchy_agent.security.permissions` plus the request body here.
+        Prompt messages are always redacted from audit records. Only narrowly
+        supported generation options are exposed so arbitrary request fields
+        cannot silently expand the integration's behavior.
         """
         self._policy.require(Capability.LOCALAI_INFERENCE)
-        raise NotImplementedError(  # pragma: no cover - unreachable while denied
-            "chat_completion is reserved for a later milestone"
+        if not isinstance(messages, list) or not messages:
+            raise LocalAIError("messages must be a non-empty list")
+        if len(messages) > 40 or any(not isinstance(item, dict) for item in messages):
+            raise LocalAIError("messages must contain at most 40 message objects")
+        if not 1 <= int(max_tokens) <= 4096:
+            raise LocalAIError("max_tokens must be between 1 and 4096")
+        if not 0.0 <= float(temperature) <= 2.0:
+            raise LocalAIError("temperature must be between 0 and 2")
+
+        selected_model = self.resolve_model_id(model)
+        body: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "max_tokens": int(max_tokens),
+            "temperature": float(temperature),
+            "stream": on_delta is not None,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        if on_delta is not None:
+            # LocalAI returns exact request usage in the trailing SSE chunk.
+            body["stream_options"] = {"include_usage": True}
+        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise LocalAIError(f"chat request exceeded {MAX_REQUEST_BYTES} bytes; refusing to send")
+        estimated_prompt_tokens = _estimate_tokens(encoded)
+        if on_usage is not None:
+            on_usage(
+                {
+                    "prompt_tokens": estimated_prompt_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": estimated_prompt_tokens,
+                    "estimated": True,
+                }
+            )
+        return self._post_chat_completion(
+            encoded,
+            on_delta=on_delta,
+            on_usage=on_usage,
+            estimated_prompt_tokens=estimated_prompt_tokens,
         )
+
+    def _post_chat_completion(
+        self,
+        encoded: bytes,
+        *,
+        on_delta: Callable[[str], None] | None,
+        on_usage: Callable[[dict[str, int | bool]], None] | None,
+        estimated_prompt_tokens: int,
+    ) -> dict[str, Any]:
+        request = urllib.request.Request(  # noqa: S310 - scheme validated in __init__
+            self._url("chat/completions"),
+            data=encoded,
+            method="POST",
+            headers={
+                "Accept": "text/event-stream, application/json"
+                if on_delta is not None
+                else "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "omarchy-agent/0.1",
+            },
+        )
+        try:
+            with self._opener.open(request, timeout=self.inference_timeout) as response:
+                status = int(getattr(response, "status", 0) or 0)
+                if status != 200:
+                    raise LocalAIError(f"POST /v1/chat/completions returned HTTP {status}")
+                if on_delta is None:
+                    raw = response.read(MAX_RESPONSE_BYTES + 1)
+                    if len(raw) > MAX_RESPONSE_BYTES:
+                        raise LocalAIError(
+                            f"LocalAI response exceeded {MAX_RESPONSE_BYTES} bytes; "
+                            "refusing to parse"
+                        )
+                    payload = _parse_json_body(raw)
+                    usage = (
+                        _normalise_usage(payload.get("usage"))
+                        if isinstance(payload, dict)
+                        else None
+                    )
+                    if on_usage is not None:
+                        on_usage(
+                            usage
+                            if usage is not None
+                            else {
+                                "prompt_tokens": estimated_prompt_tokens,
+                                "completion_tokens": 0,
+                                "total_tokens": estimated_prompt_tokens,
+                                "estimated": True,
+                            }
+                        )
+                    return _extract_completion_message(payload)
+                return _read_streaming_completion(
+                    response,
+                    on_delta,
+                    on_usage=on_usage,
+                    estimated_prompt_tokens=estimated_prompt_tokens,
+                )
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            raise LocalAIError(f"POST /v1/chat/completions returned HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise LocalAIError(f"cannot reach LocalAI at {self.base_url}: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise LocalAIError(
+                f"LocalAI at {self.base_url} did not respond within {self.inference_timeout}s"
+            ) from exc
+        except OSError as exc:
+            raise LocalAIError(f"network error talking to {self.base_url}: {exc}") from exc
+
+
+def _parse_json_body(raw: bytes) -> Any:
+    if not raw:
+        raise LocalAIError("LocalAI returned an empty chat completion response")
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        raise LocalAIError(f"LocalAI returned invalid JSON: {exc}") from exc
+
+
+def _extract_completion_message(payload: Any) -> dict[str, Any]:
+    try:
+        message = payload["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LocalAIError("LocalAI returned an invalid chat completion shape") from exc
+    if not isinstance(message, dict):
+        raise LocalAIError("LocalAI returned a non-object chat message")
+    return message
+
+
+def _normalise_usage(value: Any) -> dict[str, int | bool] | None:
+    if not isinstance(value, dict):
+        return None
+    prompt = value.get("prompt_tokens")
+    completion = value.get("completion_tokens")
+    total = value.get("total_tokens")
+    if not all(
+        isinstance(item, int) and not isinstance(item, bool) and item >= 0
+        for item in (prompt, completion)
+    ):
+        return None
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        total = prompt + completion
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "estimated": False,
+    }
+
+
+def _estimate_tokens(value: bytes | str) -> int:
+    """Return a visibly approximate byte-based token count without a tokenizer."""
+    data = value if isinstance(value, bytes) else value.encode("utf-8")
+    return _estimate_byte_count(len(data))
+
+
+def _estimate_byte_count(byte_count: int) -> int:
+    return max(0, (byte_count + 3) // 4)
+
+
+def _read_streaming_completion(
+    response: Any,
+    on_delta: Callable[[str], None],
+    *,
+    on_usage: Callable[[dict[str, int | bool]], None] | None = None,
+    estimated_prompt_tokens: int = 0,
+) -> dict[str, Any]:
+    """Collect OpenAI-compatible SSE chunks and stream visible text to a callback."""
+    content: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    completion_chars = 0
+    latest_usage: dict[str, int | bool] = {
+        "prompt_tokens": estimated_prompt_tokens,
+        "completion_tokens": 0,
+        "total_tokens": estimated_prompt_tokens,
+        "estimated": True,
+    }
+    total_bytes = 0
+    saw_done = False
+    while True:
+        line = response.readline(MAX_RESPONSE_BYTES + 1)
+        if not line:
+            break
+        total_bytes += len(line)
+        if total_bytes > MAX_RESPONSE_BYTES:
+            raise LocalAIError(
+                f"LocalAI response exceeded {MAX_RESPONSE_BYTES} bytes; refusing to parse"
+            )
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            saw_done = True
+            break
+        if not data:
+            continue
+        try:
+            chunk = json.loads(data.decode("utf-8", errors="replace"))
+        except ValueError as exc:
+            raise LocalAIError("LocalAI sent malformed streaming JSON") from exc
+        usage = _normalise_usage(chunk.get("usage")) if isinstance(chunk, dict) else None
+        if usage is not None:
+            latest_usage = usage
+            if on_usage is not None:
+                on_usage(latest_usage)
+        choices = chunk.get("choices") if isinstance(chunk, dict) else None
+        if choices == [] or choices is None:
+            continue
+        try:
+            delta = choices[0].get("delta", {})
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LocalAIError("LocalAI sent an invalid streaming response shape") from exc
+        text = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(text, str):
+            content.append(text)
+            completion_chars += len(text.encode("utf-8"))
+            on_delta(text)
+        calls = delta.get("tool_calls", []) if isinstance(delta, dict) else []
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("index"), int):
+                    continue
+                index = call["index"]
+                target = tool_calls.setdefault(
+                    index,
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if isinstance(call.get("id"), str):
+                    target["id"] += call["id"]
+                function = call.get("function", {})
+                if isinstance(function, dict):
+                    if isinstance(function.get("name"), str):
+                        target["function"]["name"] += function["name"]
+                    if isinstance(function.get("arguments"), str):
+                        target["function"]["arguments"] += function["arguments"]
+                        completion_chars += len(function["arguments"].encode("utf-8"))
+                    if isinstance(function.get("name"), str):
+                        completion_chars += len(function["name"].encode("utf-8"))
+        if on_usage is not None and bool(latest_usage.get("estimated", True)):
+            completion_tokens = _estimate_byte_count(completion_chars)
+            latest_usage = {
+                "prompt_tokens": estimated_prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": estimated_prompt_tokens + completion_tokens,
+                "estimated": True,
+            }
+            on_usage(latest_usage)
+    if not saw_done:
+        raise LocalAIError("LocalAI streaming response ended before [DONE]")
+    result: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+    if tool_calls:
+        result["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+    if on_usage is not None and bool(latest_usage.get("estimated", True)):
+        completion_tokens = _estimate_byte_count(completion_chars)
+        on_usage(
+            {
+                "prompt_tokens": estimated_prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": estimated_prompt_tokens + completion_tokens,
+                "estimated": True,
+            }
+        )
+    return result
 
 
 def _parse_model_payload(payload: Any) -> list[ModelInfo]:
@@ -356,9 +620,7 @@ def _parse_model_payload(payload: Any) -> list[ModelInfo]:
     if data is None:
         return []
     if not isinstance(data, list):
-        raise LocalAIError(
-            f"expected a list of models, got {type(data).__name__} from /v1/models"
-        )
+        raise LocalAIError(f"expected a list of models, got {type(data).__name__} from /v1/models")
 
     models: list[ModelInfo] = []
     for item in data:

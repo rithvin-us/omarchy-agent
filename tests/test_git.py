@@ -42,8 +42,8 @@ COMMIT_ENVIRONMENT = {
 def run_setup_git(directory: Path, arguments: list[str]) -> str:
     """Run a git command for test *setup* only, never through the bridge."""
     environment = {**os.environ, **COMMIT_ENVIRONMENT}
-    completed = subprocess.run(
-        ["git", *arguments],
+    completed = subprocess.run(  # noqa: S603
+        ["git", *arguments],  # noqa: S607
         cwd=str(directory),
         capture_output=True,
         text=True,
@@ -225,18 +225,22 @@ class DiffSummaryTests(GitBridgeTestCase):
 
 class FailureHandlingTests(GitBridgeTestCase):
     def test_timeout_becomes_a_git_error(self) -> None:
-        with mock.patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=0.01),
+        with (
+            mock.patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=0.01),
+            ),
+            self.assertRaises(GitError) as raised,
         ):
-            with self.assertRaises(GitError) as raised:
-                get_repository_status(self.repository, policy=self.policy, timeout=0.01)
+            get_repository_status(self.repository, policy=self.policy, timeout=0.01)
         self.assertIn("timed out", str(raised.exception))
 
     def test_oserror_becomes_a_git_error(self) -> None:
-        with mock.patch("subprocess.run", side_effect=OSError("no exec")):
-            with self.assertRaises(GitError):
-                get_repository_status(self.repository, policy=self.policy)
+        with (
+            mock.patch("subprocess.run", side_effect=OSError("no exec")),
+            self.assertRaises(GitError),
+        ):
+            get_repository_status(self.repository, policy=self.policy)
 
     def test_nonzero_exit_becomes_a_git_error(self) -> None:
         # The first call resolves the repository root successfully; the second
@@ -247,31 +251,39 @@ class FailureHandlingTests(GitBridgeTestCase):
         failed = subprocess.CompletedProcess(
             args=["git"], returncode=128, stdout="", stderr="fatal: bad revision\n"
         )
-        with mock.patch("subprocess.run", side_effect=[resolved, failed]):
-            with self.assertRaises(GitError) as raised:
-                get_repository_status(self.repository, policy=self.policy)
+        with (
+            mock.patch("subprocess.run", side_effect=[resolved, failed]),
+            self.assertRaises(GitError) as raised,
+        ):
+            get_repository_status(self.repository, policy=self.policy)
         self.assertIn("bad revision", str(raised.exception))
 
     def test_unresolvable_repository_is_reported(self) -> None:
         completed = subprocess.CompletedProcess(
             args=["git"], returncode=128, stdout="", stderr="fatal: not a git repository\n"
         )
-        with mock.patch("subprocess.run", return_value=completed):
-            with self.assertRaises(NotARepository):
-                get_repository_status(self.repository, policy=self.policy)
+        with (
+            mock.patch("subprocess.run", return_value=completed),
+            self.assertRaises(NotARepository),
+        ):
+            get_repository_status(self.repository, policy=self.policy)
 
     def test_missing_git_binary_is_reported(self) -> None:
-        with mock.patch.object(git_bridge.shutil, "which", return_value=None):
-            with self.assertRaises(git_bridge.GitNotAvailable):
-                get_repository_status(self.repository, policy=self.policy)
+        with (
+            mock.patch.object(git_bridge.shutil, "which", return_value=None),
+            self.assertRaises(git_bridge.GitNotAvailable),
+        ):
+            get_repository_status(self.repository, policy=self.policy)
 
     def test_timeout_is_audited_as_an_error(self) -> None:
-        with mock.patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=0.01),
+        with (
+            mock.patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=0.01),
+            ),
+            self.assertRaises(GitError),
         ):
-            with self.assertRaises(GitError):
-                get_repository_status(self.repository, policy=self.policy, timeout=0.01)
+            get_repository_status(self.repository, policy=self.policy, timeout=0.01)
         entry = self.logger.entries()[-1]
         self.assertEqual(entry.status, "error")
         self.assertIn("GitError", entry.result_summary)

@@ -19,9 +19,8 @@ classifiers = [
   "Topic :: System :: Systems Administration",
 ]
 
-# No runtime dependencies. Everything in v0.1 is Python standard library:
-# sqlite3, urllib, subprocess, pathlib, argparse, dataclasses, unittest.
-dependencies = []
+# Rich renders Markdown, syntax-highlighted blocks, and live status in the chat CLI.
+dependencies = ["rich>=15,<16"]
 
 [project.optional-dependencies]
 # Optional developer tooling only. Not required to run the agent or its tests.
@@ -31,6 +30,7 @@ dev = [
 
 [project.scripts]
 omarchy-agent = "omarchy_agent.cli:main"
+loc = "omarchy_agent.cli:chat_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["omarchy_agent"]

@@ -41,9 +41,12 @@ class FakeClient:
 
 def run_cli(arguments: list[str]) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    with mock.patch("omarchy_agent.cli.LocalAIClient", FakeClient):
-        with redirect_stdout(out), redirect_stderr(err):
-            code = main(arguments)
+    with (
+        mock.patch("omarchy_agent.cli.LocalAIClient", FakeClient),
+        redirect_stdout(out),
+        redirect_stderr(err),
+    ):
+        code = main(arguments)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -68,7 +71,9 @@ class HelpAndVersionTests(CliTestCase):
     def test_parser_exposes_every_documented_command(self) -> None:
         parser = build_parser()
         actions = [
-            action for action in parser._actions if action.dest == "command"  # noqa: SLF001
+            action
+            for action in parser._actions
+            if action.dest == "command"  # noqa: SLF001
         ]
         choices = set(actions[0].choices or {})
         for command in (
@@ -77,6 +82,7 @@ class HelpAndVersionTests(CliTestCase):
             "init",
             "system",
             "models",
+            "chat",
             "tasks",
             "memory",
         ):
@@ -173,6 +179,40 @@ class ModelsCommandTests(CliTestCase):
         payload = json.loads(out)
         self.assertTrue(payload["connection"]["reachable"])
         self.assertEqual(payload["models"][0]["id"], "qwen3-4b-q8_0")
+
+
+class ChatCommandTests(CliTestCase):
+    def test_interactive_chat_streams_answer_and_exits(self) -> None:
+        class ChatClient:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                pass
+
+            def resolve_model_id(self, model: str) -> str:
+                return model
+
+        class FakeSession:
+            latest_context_files: list[str] = []
+
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                pass
+
+            def run_turn(self, _question: str, *, on_delta: Any, on_usage: Any = None) -> str:
+                on_delta("formatted answer")
+                if on_usage is not None:
+                    on_usage({"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20})
+                return "formatted answer"
+
+        out = io.StringIO()
+        with (
+            mock.patch("omarchy_agent.cli.LocalAIClient", ChatClient),
+            mock.patch("omarchy_agent.cli.ChatSession", FakeSession),
+            mock.patch("builtins.input", side_effect=["hello", "/exit"]),
+            redirect_stdout(out),
+        ):
+            code = main(["chat", "--root", str(Path.cwd())])
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("formatted answer", out.getvalue())
+        self.assertIn("/help", out.getvalue())
 
 
 class TasksAndMemoryCommandTests(CliTestCase):
@@ -285,9 +325,7 @@ class PersistAuditFlagTests(CliTestCase):
         self.assertEqual(code, EXIT_OK)
         self.assertIn("persisted", out)
 
-        _code, out, _err = run_cli(
-            ["--json", "--database", str(self.database), "audit-log"]
-        )
+        _code, out, _err = run_cli(["--json", "--database", str(self.database), "audit-log"])
         payload = json.loads(out)
         names = {row["tool_name"] for row in payload["tool_executions"]}
         self.assertIn("system.get_cpu_information", names)
@@ -301,9 +339,7 @@ class PersistAuditFlagTests(CliTestCase):
     def test_tasks_mirror_their_own_audit_entries(self) -> None:
         run_cli(self.arguments("init"))
         run_cli(self.arguments("tasks", "--create", "mirrored task"))
-        _code, out, _err = run_cli(
-            ["--json", "--database", str(self.database), "audit-log"]
-        )
+        _code, out, _err = run_cli(["--json", "--database", str(self.database), "audit-log"])
         payload = json.loads(out)
         names = {row["tool_name"] for row in payload["tool_executions"]}
         self.assertIn("tasks.create_task", names)

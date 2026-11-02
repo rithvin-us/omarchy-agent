@@ -24,9 +24,7 @@ from omarchy_agent.bridge.system import (
 )
 from omarchy_agent.security.audit import AuditLogger, get_audit_logger, set_audit_logger
 
-NVIDIA_SMI_SAMPLE = (
-    "0, NVIDIA GeForce RTX 4050 Laptop GPU, 580.95.05, 6141, 1024, 13, 45\n"
-)
+NVIDIA_SMI_SAMPLE = "0, NVIDIA GeForce RTX 4050 Laptop GPU, 580.95.05, 6141, 1024, 13, 45\n"
 
 
 def fake_command_result(stdout: str = "", returncode: int = 0) -> CommandResult:
@@ -143,9 +141,11 @@ class MemoryInformationTests(unittest.TestCase):
         self.assertAlmostEqual(info.used_percent, 57.1, places=1)
 
     def test_raises_when_meminfo_is_unavailable(self) -> None:
-        with mock.patch.object(system_bridge, "_read_text_file", return_value=None):
-            with self.assertRaises(system_bridge.SystemInformationError):
-                get_memory_information()
+        with (
+            mock.patch.object(system_bridge, "_read_text_file", return_value=None),
+            self.assertRaises(system_bridge.SystemInformationError),
+        ):
+            get_memory_information()
 
 
 class StorageInformationTests(unittest.TestCase):
@@ -267,9 +267,7 @@ class ProcessSummaryTests(unittest.TestCase):
     def test_entries_have_no_command_line_field(self) -> None:
         summary = get_running_process_summary(top=3)
         for item in summary.top_by_memory:
-            self.assertEqual(
-                set(item), {"pid", "name", "state", "threads", "resident_bytes"}
-            )
+            self.assertEqual(set(item), {"pid", "name", "state", "threads", "resident_bytes"})
             self.assertNotIn("cmdline", item)
             self.assertNotIn("environ", item)
 

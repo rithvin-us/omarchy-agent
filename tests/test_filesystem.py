@@ -97,9 +97,7 @@ class ListDirectoryTests(FilesystemBridgeTestCase):
         for name in ("escape-file", "escape-dir"):
             with self.subTest(name=name):
                 self.assertEqual(by_name[name].kind, "symlink")
-                self.assertEqual(
-                    by_name[name].skip_reason, "symlink points outside the workspace"
-                )
+                self.assertEqual(by_name[name].skip_reason, "symlink points outside the workspace")
 
     def test_file_sizes_and_timestamps_are_reported(self) -> None:
         listing = list_directory(self.root / "src", policy=self.policy)
@@ -139,9 +137,8 @@ class ReadFileTests(FilesystemBridgeTestCase):
 
     def test_refuses_absolute_path_outside_the_root(self) -> None:
         for target in ("/etc/passwd", "/etc/shadow", str(self.outside_file)):
-            with self.subTest(target=target):
-                with self.assertRaises(PathSecurityError):
-                    read_file(target, policy=self.policy)
+            with self.subTest(target=target), self.assertRaises(PathSecurityError):
+                read_file(target, policy=self.policy)
 
     def test_refuses_symlink_escape(self) -> None:
         with self.assertRaises(PathSecurityError):
@@ -153,9 +150,8 @@ class ReadFileTests(FilesystemBridgeTestCase):
 
     def test_refuses_sensitive_files(self) -> None:
         for name in (".env", "id_rsa"):
-            with self.subTest(name=name):
-                with self.assertRaises(PathSecurityError):
-                    read_file(self.root / name, policy=self.policy)
+            with self.subTest(name=name), self.assertRaises(PathSecurityError):
+                read_file(self.root / name, policy=self.policy)
 
     def test_refuses_file_inside_blocked_directory(self) -> None:
         with self.assertRaises(PathSecurityError):
@@ -290,7 +286,10 @@ class SearchFilesTests(FilesystemBridgeTestCase):
     def test_skips_binary_files(self) -> None:
         results = search_files("IHDR", self.root, policy=self.policy)
         self.assertFalse(
-            any(match.match_type == "content" and "logo.png" in match.path for match in results.matches)
+            any(
+                match.match_type == "content" and "logo.png" in match.path
+                for match in results.matches
+            )
         )
 
     def test_respects_max_results(self) -> None:

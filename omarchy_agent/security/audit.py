@@ -12,6 +12,7 @@ Two hard rules hold everywhere in this module:
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import json
@@ -96,9 +97,7 @@ def _redact_value(key: str | None, value: Any, depth: int = 0) -> Any:
             text = f"{text[:MAX_ARGUMENT_CHARS]}...<truncated {len(text)} chars>"
         return text
     if isinstance(value, dict):
-        return {
-            str(k): _redact_value(str(k), v, depth + 1) for k, v in list(value.items())[:20]
-        }
+        return {str(k): _redact_value(str(k), v, depth + 1) for k, v in list(value.items())[:20]}
     if isinstance(value, (list, tuple, set, frozenset)):
         items = list(value)
         redacted = [_redact_value(key, item, depth + 1) for item in items[:20]]
@@ -253,10 +252,8 @@ class AuditLogger:
         def sink(entry: AuditEntry) -> None:
             with open(target, "a", encoding="utf-8") as handle:
                 handle.write(entry.as_line() + "\n")
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(target, 0o600)
-            except OSError:
-                pass
 
         self.add_sink(sink)
         return True

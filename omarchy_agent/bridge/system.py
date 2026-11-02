@@ -17,6 +17,7 @@ exists on ``PATH``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import shutil
@@ -196,7 +197,7 @@ def run_readonly_command(
 
 def _read_text_file(path: str | os.PathLike[str], limit: int = 256 * 1024) -> str | None:
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read(limit)
     except OSError:
         return None
@@ -460,9 +461,9 @@ def get_os_information() -> OsInformation:
     if uptime_raw:
         try:
             uptime_seconds = float(uptime_raw.split()[0])
-            boot_time = datetime.fromtimestamp(
-                time.time() - uptime_seconds, UTC
-            ).isoformat(timespec="seconds")
+            boot_time = datetime.fromtimestamp(time.time() - uptime_seconds, UTC).isoformat(
+                timespec="seconds"
+            )
         except (ValueError, IndexError):
             pass
 
@@ -515,18 +516,14 @@ def get_cpu_information() -> CpuInformation:
         elif key == "core id":
             core_ids.add((current_physical_id, value))
         elif key == "cpu mhz":
-            try:
+            with contextlib.suppress(ValueError):
                 frequencies.append(float(value))
-            except ValueError:
-                pass
 
     max_frequency: float | None = None
     raw_max = _read_text_file("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
     if raw_max:
-        try:
+        with contextlib.suppress(ValueError):
             max_frequency = int(raw_max.strip()) / 1000.0
-        except ValueError:
-            pass
 
     load: tuple[float, float, float] | None
     try:

@@ -16,14 +16,17 @@ import argparse
 import json
 import shutil
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import __version__
 from .bridge import filesystem as fs_bridge
 from .bridge import git as git_bridge
 from .bridge import system as system_bridge
+from .core.chat import DEFAULT_CHAT_MODEL, ChatSession
 from .core.task_manager import TaskManager, initialize_storage
+from .core.terminal_ui import TerminalUI
 from .integrations.localai import DEFAULT_BASE_URL, LocalAIClient, LocalAIError
 from .memory.database import (
     SCHEMA_VERSION,
@@ -155,10 +158,15 @@ def command_audit(args: argparse.Namespace) -> int:
     def render(payload: dict[str, Any]) -> None:
         heading(f"Omarchy Agent {payload['agent_version']} -- environment audit")
         field("python", f"{payload['python']['version']} ({payload['python']['executable']})")
-        field("distribution", f"{payload['host']['distribution']} {payload['host']['distribution_version']}")
+        field(
+            "distribution",
+            f"{payload['host']['distribution']} {payload['host']['distribution_version']}",
+        )
         field("kernel", payload["host"]["kernel_release"])
         field("architecture", payload["host"]["architecture"])
-        field("session", f"{payload['host']['desktop_session']} / {payload['host']['display_server']}")
+        field(
+            "session", f"{payload['host']['desktop_session']} / {payload['host']['display_server']}"
+        )
 
         heading("Tool availability (never installed by this agent)")
         for tool in payload["tools"]:
@@ -254,7 +262,10 @@ def command_system(args: argparse.Namespace) -> int:
     def render(payload: dict[str, Any]) -> None:
         operating_system = payload["os"]
         heading("Operating system")
-        field("distribution", f"{operating_system['distribution']} {operating_system['distribution_version']}")
+        field(
+            "distribution",
+            f"{operating_system['distribution']} {operating_system['distribution_version']}",
+        )
         field("kernel", f"{operating_system['kernel_name']} {operating_system['kernel_release']}")
         field("architecture", operating_system["architecture"])
         field("hostname", operating_system["hostname"])
@@ -326,7 +337,9 @@ def command_system(args: argparse.Namespace) -> int:
         field("by state", ", ".join(f"{k}={v}" for k, v in processes["by_state"].items()))
         print(f"\n  top {len(processes['top_by_memory'])} by resident memory:")
         for item in processes["top_by_memory"]:
-            print(f"    {item['pid']:>8}  {human_bytes(item['resident_bytes']):>10}  {item['name']}")
+            print(
+                f"    {item['pid']:>8}  {human_bytes(item['resident_bytes']):>10}  {item['name']}"
+            )
         print(f"\n  note: {processes['note']}")
         print()
 
@@ -358,7 +371,10 @@ def command_models(args: argparse.Namespace) -> int:
         field("endpoint", connection["base_url"])
         field("reachable", connection["reachable"])
         field("status code", connection["status_code"])
-        field("latency", f"{connection['latency_ms']} ms" if connection["latency_ms"] is not None else "-")
+        field(
+            "latency",
+            f"{connection['latency_ms']} ms" if connection["latency_ms"] is not None else "-",
+        )
         if connection["error"]:
             field("error", connection["error"])
         if connection["hint"]:
@@ -377,6 +393,71 @@ def command_models(args: argparse.Namespace) -> int:
     if not status.reachable:
         return EXIT_CHECK_FAILED
     return EXIT_OK
+
+
+def command_chat(args: argparse.Namespace) -> int:
+    """Run one interactive, repository-scoped LocalAI chat session."""
+    endpoint = getattr(args, "endpoint", DEFAULT_BASE_URL)
+    repo_root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ui = TerminalUI()
+
+    try:
+        client = LocalAIClient(endpoint)
+        session = ChatSession(client, repo_root, model=args.model, on_status=ui.status)
+        model_id = client.resolve_model_id(args.model)
+    except (LocalAIError, OSError, ValueError, PathSecurityError) as exc:
+        ui.error(exc)
+        return EXIT_ERROR
+
+    ui.header(model_id, repo_root)
+
+    while True:
+        try:
+            prompt = input("\n> ").strip()
+        except EOFError:
+            print()
+            return EXIT_OK
+        if not prompt:
+            continue
+        command = prompt.lower()
+        if command in {"/exit", "/quit"}:
+            return EXIT_OK
+        if command == "/help":
+            print("Ask about this repository. /files lists context used for the last turn.")
+            print("Read-only tools only; file changes and shell commands are unavailable.")
+            continue
+        if command == "/files":
+            if session.latest_context_files:
+                for path in session.latest_context_files:
+                    print(f"  {path}")
+            else:
+                print("  No context files selected yet.")
+            continue
+        if command == "/clear":
+            session.messages = session.messages[:1]
+            session.latest_context_files = []
+            print("Conversation cleared.")
+            continue
+        try:
+            ui.begin_turn()
+            ui.status("searching repository")
+            answer = session.run_turn(
+                prompt,
+                on_delta=ui.write_delta,
+                on_usage=ui.update_usage,
+            )
+            ui.finish_turn(answer if answer else "(empty response)")
+        except KeyboardInterrupt:
+            ui.end_turn()
+            raise
+        except (LocalAIError, OSError, ValueError, PermissionError) as exc:
+            ui.end_turn()
+            ui.error(exc)
+
+
+def chat_main() -> int:
+    """Entry point installed as the short ``loc`` command."""
+    return main(["chat", *sys.argv[1:]])
 
 
 def _open_manager(args: argparse.Namespace, *, mirror_audit: bool = False) -> TaskManager:
@@ -524,7 +605,8 @@ def command_doctor(args: argparse.Namespace) -> int:
     check(
         "workspace roots",
         bool(policy.roots),
-        ", ".join(policy.describe_roots()) if policy.roots
+        ", ".join(policy.describe_roots())
+        if policy.roots
         else "no permitted root resolved; ~/Projects not found",
     )
 
@@ -730,7 +812,10 @@ def command_git(args: argparse.Namespace) -> int:
         elif args.action == "branch":
             result = git_bridge.get_current_branch(args.path).as_dict()
         elif args.action == "log":
-            result = [commit.as_dict() for commit in git_bridge.get_recent_commits(args.path, limit=args.limit)]
+            result = [
+                commit.as_dict()
+                for commit in git_bridge.get_recent_commits(args.path, limit=args.limit)
+            ]
         else:
             result = git_bridge.get_diff_summary(args.path, staged=args.staged).as_dict()
     except (PathSecurityError, git_bridge.GitError, PermissionDenied, OSError) as exc:
@@ -859,9 +944,21 @@ def build_parser() -> argparse.ArgumentParser:
         handler=command_models
     )
 
-    subparsers.add_parser(
-        "capabilities", help="show the central permission policy"
-    ).set_defaults(handler=command_capabilities)
+    chat_parser = subparsers.add_parser(
+        "chat", help="chat with LocalAI using bounded repository context and read-only tools"
+    )
+    chat_parser.add_argument("--root", default=None, help="repository directory (default: cwd)")
+    chat_parser.add_argument(
+        "--model", default=DEFAULT_CHAT_MODEL, help="installed LocalAI model ID"
+    )
+    chat_parser.add_argument(
+        "--endpoint", default=argparse.SUPPRESS, help="LocalAI loopback API base URL"
+    )
+    chat_parser.set_defaults(handler=command_chat)
+
+    subparsers.add_parser("capabilities", help="show the central permission policy").set_defaults(
+        handler=command_capabilities
+    )
 
     tasks_parser = subparsers.add_parser("tasks", help="list and manage persistent tasks")
     tasks_parser.add_argument("--status", default=None, help="filter by status")

@@ -477,9 +477,12 @@ def get_current_branch(
 
     if not branch:
         # A repository with no commits yet: read the symbolic ref directly.
-        branch = _run_git(
-            root, ["symbolic-ref", "--short", "HEAD"], timeout=timeout, allow_failure=True
-        ).strip() or "(unknown)"
+        branch = (
+            _run_git(
+                root, ["symbolic-ref", "--short", "HEAD"], timeout=timeout, allow_failure=True
+            ).strip()
+            or "(unknown)"
+        )
 
     return BranchInfo(
         root=str(root),
