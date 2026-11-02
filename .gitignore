@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments (project-local only; never global)
+.venv/
+venv/
+
+# Local scratch
+*.log
+.DS_Store
+
+# Never commit secrets. The agent also refuses to *read* these at runtime;
+# see omarchy_agent/security/paths.py.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+credentials.json
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
