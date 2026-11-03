@@ -128,6 +128,8 @@ omarchy-agent serve --port 8443 --token my-secret-token
 # POST /api/chat   - Submit prompts with optional SSE streaming (stream: true)
 ```
 
+For full reverse proxy configurations (Cloudflare Tunnel, Caddy, Nginx), SSE streaming clients, and systemd service setup, see the [Remote Access Guide](docs/REMOTE_GUIDE.md).
+
 ---
 
 ## Command Reference

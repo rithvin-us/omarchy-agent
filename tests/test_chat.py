@@ -75,9 +75,7 @@ class ChatSessionTests(unittest.TestCase):
         self.assertIn("custom_widget", (self.root / "parser.py").read_text(encoding="utf-8"))
 
     def test_edit_file_tool_fails_if_target_not_found(self) -> None:
-        payload = (
-            '{"path": "parser.py", "target": "missing_token", "replacement": "new_token"}'
-        )
+        payload = '{"path": "parser.py", "target": "missing_token", "replacement": "new_token"}'
         result = self.session._dispatch_tool("edit_file", payload)
         self.assertIn("error", result)
 
