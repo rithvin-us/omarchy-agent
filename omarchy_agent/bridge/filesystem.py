@@ -12,6 +12,7 @@ this file, and the ``filesystem.write`` capability is marked
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import time
@@ -34,10 +35,13 @@ __all__ = [
     "FilesystemError",
     "SearchMatch",
     "SearchResults",
+    "WriteResult",
+    "edit_file",
     "get_file_info",
     "list_directory",
     "read_file",
     "search_files",
+    "write_file",
 ]
 
 #: Bytes sampled when deciding whether a file is binary.
@@ -266,6 +270,30 @@ class SearchResults:
             f"search in {self.root}: {len(self.matches)} matches across "
             f"{self.files_scanned} files (truncated={self.truncated}, "
             f"timed_out={self.timed_out})"
+        )
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    path: str
+    bytes_written: int
+    lines_written: int
+    created: bool
+    action: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "bytes_written": self.bytes_written,
+            "lines_written": self.lines_written,
+            "created": self.created,
+            "action": self.action,
+        }
+
+    def audit_summary(self) -> str:
+        return (
+            f"{self.action} {self.path} ({self.bytes_written} bytes, "
+            f"{self.lines_written} lines, created={self.created})"
         )
 
 
@@ -642,4 +670,113 @@ def search_files(
         truncated=truncated,
         timed_out=timed_out,
         duration_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+@audited(
+    "filesystem.write_file",
+    Capability.FS_WRITE,
+    redact_params=("content",),
+)
+def write_file(
+    path: str | os.PathLike[str],
+    content: str,
+    *,
+    policy: PathPolicy | None = None,
+    overwrite: bool = True,
+) -> WriteResult:
+    """Create or overwrite a file within the permitted workspace roots."""
+    active_policy = policy or default_policy()
+    target = active_policy.resolve_within_roots(path, must_exist=False)
+
+    if target.is_dir():
+        raise FilesystemError(f"cannot write to a directory: {target}")
+
+    already_existed = target.exists()
+    if already_existed and not overwrite:
+        raise FilesystemError(f"file already exists and overwrite is False: {target}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    encoded = content.encode("utf-8")
+    tmp_path = target.with_name(f".{target.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(encoded)
+        os.replace(tmp_path, target)
+    except OSError as exc:
+        if tmp_path.exists():
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise FilesystemError(f"failed to write file {target}: {exc}") from exc
+
+    line_count = len(content.splitlines()) if content else 0
+    return WriteResult(
+        path=str(target),
+        bytes_written=len(encoded),
+        lines_written=line_count,
+        created=not already_existed,
+        action="write",
+    )
+
+
+@audited(
+    "filesystem.edit_file",
+    Capability.FS_WRITE,
+    redact_params=("target", "replacement"),
+)
+def edit_file(
+    path: str | os.PathLike[str],
+    target: str,
+    replacement: str,
+    *,
+    policy: PathPolicy | None = None,
+) -> WriteResult:
+    """Find and replace an exact substring in a workspace file."""
+    if not target:
+        raise FilesystemError("edit target cannot be empty")
+
+    active_policy = policy or default_policy()
+    file_path = active_policy.resolve_within_roots(path, must_exist=True)
+
+    if not file_path.is_file():
+        raise FilesystemError(f"path is not a regular file: {file_path}")
+
+    try:
+        with open(file_path, encoding="utf-8") as handle:
+            original = handle.read()
+    except UnicodeDecodeError as exc:
+        raise BinaryFileRejected(file_path, "not valid UTF-8") from exc
+    except OSError as exc:
+        raise FilesystemError(f"failed to read file for editing {file_path}: {exc}") from exc
+
+    count = original.count(target)
+    if count == 0:
+        raise FilesystemError(f"target string was not found in {file_path}")
+    if count > 1:
+        raise FilesystemError(
+            f"target string occurred {count} times in {file_path}; "
+            "edit target must match exactly once"
+        )
+
+    updated = original.replace(target, replacement, 1)
+    encoded = updated.encode("utf-8")
+    tmp_path = file_path.with_name(f".{file_path.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(encoded)
+        os.replace(tmp_path, file_path)
+    except OSError as exc:
+        if tmp_path.exists():
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise FilesystemError(f"failed to write edited file {file_path}: {exc}") from exc
+
+    line_count = len(updated.splitlines()) if updated else 0
+    return WriteResult(
+        path=str(file_path),
+        bytes_written=len(encoded),
+        lines_written=line_count,
+        created=False,
+        action="edit",
     )

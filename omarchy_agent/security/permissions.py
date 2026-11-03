@@ -44,26 +44,26 @@ class Capability(StrEnum):
     FS_READ = "filesystem.read"
     FS_LIST = "filesystem.list"
     FS_SEARCH = "filesystem.search"
+    FS_WRITE = "filesystem.write"
     SYSTEM_INFO = "system.info"
     GIT_INSPECT = "git.inspect"
     LOCALAI_INSPECT = "localai.inspect"
+    LOCALAI_INFERENCE = "localai.inference"
+    TERMINAL_EXEC = "terminal.execute"
     MEMORY_WRITE = "memory.write"
     MEMORY_READ = "memory.read"
     TASK_WRITE = "task.write"
     TASK_READ = "task.read"
     AUDIT_WRITE = "audit.write"
+    REMOTE_ACCESS = "remote.access"
 
     # --- planned, not implemented -------------------------------------
-    FS_WRITE = "filesystem.write"
     FS_DELETE = "filesystem.delete"
-    TERMINAL_EXEC = "terminal.execute"
-    LOCALAI_INFERENCE = "localai.inference"
     BROWSER_CONTROL = "browser.control"
     DESKTOP_INPUT = "desktop.input"
     DESKTOP_SCREENSHOT = "desktop.screenshot"
     APP_MANAGE = "application.manage"
     SCHEDULE_WRITE = "schedule.write"
-    REMOTE_ACCESS = "remote.access"
 
     # --- forbidden by project policy -----------------------------------
     PRIVILEGE_ESCALATION = "system.privileged"
@@ -86,16 +86,16 @@ _STATES: dict[Capability, CapabilityState] = {
     Capability.TASK_WRITE: CapabilityState.ALLOWED,
     Capability.TASK_READ: CapabilityState.ALLOWED,
     Capability.AUDIT_WRITE: CapabilityState.ALLOWED,
-    Capability.FS_WRITE: CapabilityState.NOT_IMPLEMENTED,
+    Capability.FS_WRITE: CapabilityState.ALLOWED,
     Capability.FS_DELETE: CapabilityState.NOT_IMPLEMENTED,
-    Capability.TERMINAL_EXEC: CapabilityState.NOT_IMPLEMENTED,
+    Capability.TERMINAL_EXEC: CapabilityState.ALLOWED,
     Capability.LOCALAI_INFERENCE: CapabilityState.ALLOWED,
     Capability.BROWSER_CONTROL: CapabilityState.NOT_IMPLEMENTED,
     Capability.DESKTOP_INPUT: CapabilityState.NOT_IMPLEMENTED,
     Capability.DESKTOP_SCREENSHOT: CapabilityState.NOT_IMPLEMENTED,
     Capability.APP_MANAGE: CapabilityState.NOT_IMPLEMENTED,
     Capability.SCHEDULE_WRITE: CapabilityState.NOT_IMPLEMENTED,
-    Capability.REMOTE_ACCESS: CapabilityState.NOT_IMPLEMENTED,
+    Capability.REMOTE_ACCESS: CapabilityState.ALLOWED,
     Capability.PRIVILEGE_ESCALATION: CapabilityState.DENIED,
     Capability.PACKAGE_INSTALL: CapabilityState.DENIED,
     Capability.DOCKER_CONTROL: CapabilityState.DENIED,
@@ -116,18 +116,16 @@ _NOTES: dict[Capability, str] = {
     Capability.TASK_WRITE: "Create and update the agent's own task records.",
     Capability.TASK_READ: "Read the agent's own task records.",
     Capability.AUDIT_WRITE: "Append tool-execution metadata to the audit log.",
-    Capability.FS_WRITE: "Planned: create or modify workspace files.",
+    Capability.FS_WRITE: "Create or modify workspace files within permitted roots.",
     Capability.FS_DELETE: "Planned: delete workspace files.",
-    Capability.TERMINAL_EXEC: (
-        "Planned: run an allowlisted command. Never a model-supplied shell string."
-    ),
+    Capability.TERMINAL_EXEC: "Execute shell commands with user confirmation guard.",
     Capability.LOCALAI_INFERENCE: "Run local chat completions and validated read-only tools.",
     Capability.BROWSER_CONTROL: "Planned: browser automation.",
     Capability.DESKTOP_INPUT: "Planned: mouse and keyboard control via Wayland tooling.",
     Capability.DESKTOP_SCREENSHOT: "Planned: screen capture via grim/slurp.",
     Capability.APP_MANAGE: "Planned: launch and focus desktop applications.",
     Capability.SCHEDULE_WRITE: "Planned: user-initiated scheduled workflows.",
-    Capability.REMOTE_ACCESS: "Planned: access from a phone over a private network only.",
+    Capability.REMOTE_ACCESS: "Authenticated HTTP/SSE remote access behind reverse proxy.",
     Capability.PRIVILEGE_ESCALATION: "Forbidden: no sudo, no privileged system changes.",
     Capability.PACKAGE_INSTALL: "Forbidden: no pacman, no global package installation.",
     Capability.DOCKER_CONTROL: (

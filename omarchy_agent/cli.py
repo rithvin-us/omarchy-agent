@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import sys
 from collections.abc import Callable
@@ -35,6 +36,11 @@ from .memory.database import (
     DatabaseNotInitialized,
     default_data_directory,
     default_database_path,
+)
+from .remote.server import (
+    DEFAULT_REMOTE_HOST,
+    DEFAULT_REMOTE_PORT,
+    create_remote_server,
 )
 from .security.audit import get_audit_logger
 from .security.paths import PathPolicy, PathSecurityError, default_policy
@@ -401,9 +407,32 @@ def command_chat(args: argparse.Namespace) -> int:
     repo_root = Path(args.root or Path.cwd()).expanduser().resolve()
     ui = TerminalUI()
 
+    def confirm_command(command_str: str, cwd: Path) -> bool:
+        ui.finish_activity()
+        if not sys.stdin.isatty():
+            return False
+        print(f"\n\033[1;33mExecute command in {cwd}:\033[0m\n  \033[1;37m{command_str}\033[0m")
+        try:
+            reply = input("Allow execution? [y/N]: ").strip().lower()
+            return reply in {"y", "yes"}
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    manager: TaskManager | None
+    try:
+        manager = _open_manager(args, mirror_audit=True)
+    except Exception:
+        manager = None
+
     try:
         client = LocalAIClient(endpoint)
-        session = ChatSession(client, repo_root, model=args.model, on_status=ui.status)
+        session = ChatSession(
+            client,
+            repo_root,
+            model=args.model,
+            on_status=ui.status,
+            on_confirm_command=confirm_command,
+        )
         model_id = client.resolve_model_id(args.model)
     except (LocalAIError, OSError, ValueError, PathSecurityError) as exc:
         ui.error(exc)
@@ -423,8 +452,11 @@ def command_chat(args: argparse.Namespace) -> int:
         if command in {"/exit", "/quit"}:
             return EXIT_OK
         if command == "/help":
-            print("Ask about this repository. /files lists context used for the last turn.")
-            print("Read-only tools only; file changes and shell commands are unavailable.")
+            print("Commands: /help, /files, /plan <goal>, /clear, /exit")
+            print(
+                "Tools available: read, write, edit files, and run shell "
+                "commands (with confirmation)."
+            )
             continue
         if command == "/files":
             if session.latest_context_files:
@@ -432,6 +464,32 @@ def command_chat(args: argparse.Namespace) -> int:
                     print(f"  {path}")
             else:
                 print("  No context files selected yet.")
+            continue
+        if command.startswith("/plan"):
+            goal = prompt[5:].strip()
+            if not goal:
+                print("Usage: /plan <description of goal>")
+                continue
+            try:
+                ui.begin_turn()
+                ui.status("planning steps")
+                answer, created_tasks = session.plan_turn(
+                    goal,
+                    on_delta=ui.write_delta,
+                    on_usage=ui.update_usage,
+                    manager=manager,
+                )
+                ui.finish_turn(answer if answer else "(empty plan)")
+                if created_tasks:
+                    print(f"\nCreated {len(created_tasks)} task(s) in database:")
+                    for task in created_tasks:
+                        print(f"  #{task.id} [{task.status}] {task.title}")
+            except KeyboardInterrupt:
+                ui.end_turn()
+                raise
+            except (LocalAIError, OSError, ValueError, PermissionError) as exc:
+                ui.end_turn()
+                ui.error(exc)
             continue
         if command == "/clear":
             session.messages = session.messages[:1]
@@ -453,6 +511,46 @@ def command_chat(args: argparse.Namespace) -> int:
         except (LocalAIError, OSError, ValueError, PermissionError) as exc:
             ui.end_turn()
             ui.error(exc)
+
+
+def command_serve(args: argparse.Namespace) -> int:
+    """Run the token-authenticated remote access HTTP server."""
+    endpoint = getattr(args, "endpoint", DEFAULT_BASE_URL)
+    repo_root = Path(args.root or Path.cwd()).expanduser().resolve()
+    host = getattr(args, "host", DEFAULT_REMOTE_HOST)
+    port = getattr(args, "port", DEFAULT_REMOTE_PORT)
+    token = getattr(args, "token", None) or secrets.token_urlsafe(24)
+
+    try:
+        manager = _open_manager(args, mirror_audit=True)
+    except Exception:
+        manager = None
+
+    try:
+        server = create_remote_server(
+            host=host,
+            port=port,
+            token=token,
+            repo_root=repo_root,
+            endpoint=endpoint,
+            manager=manager,
+        )
+    except (LocalAIError, OSError, ValueError, PathSecurityError, PermissionDenied) as exc:
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print(f"Omarchy Agent Remote Server listening on http://{host}:{port}")
+    print(f"Repository: {repo_root}")
+    print(f"Bearer Token: {token}")
+    print("Endpoints: /api/health, /api/tasks, /api/chat")
+    print("Press Ctrl+C to stop.")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down remote server...")
+        server.shutdown()
+    return EXIT_OK
 
 
 def chat_main() -> int:
@@ -945,7 +1043,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     chat_parser = subparsers.add_parser(
-        "chat", help="chat with LocalAI using bounded repository context and read-only tools"
+        "chat", help="chat with LocalAI using bounded repository context and tools"
     )
     chat_parser.add_argument("--root", default=None, help="repository directory (default: cwd)")
     chat_parser.add_argument(
@@ -955,6 +1053,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint", default=argparse.SUPPRESS, help="LocalAI loopback API base URL"
     )
     chat_parser.set_defaults(handler=command_chat)
+
+    serve_parser = subparsers.add_parser(
+        "serve", help="run token-authenticated HTTP/SSE server for remote access"
+    )
+    serve_parser.add_argument(
+        "--host", default=DEFAULT_REMOTE_HOST, help="host to bind (default: 127.0.0.1)"
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=DEFAULT_REMOTE_PORT, help="port to bind (default: 8443)"
+    )
+    serve_parser.add_argument("--token", default=None, help="bearer authentication token")
+    serve_parser.add_argument("--root", default=None, help="repository directory (default: cwd)")
+    serve_parser.add_argument(
+        "--endpoint", default=argparse.SUPPRESS, help="LocalAI loopback API base URL"
+    )
+    serve_parser.set_defaults(handler=command_serve)
 
     subparsers.add_parser("capabilities", help="show the central permission policy").set_defaults(
         handler=command_capabilities

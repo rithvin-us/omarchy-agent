@@ -48,9 +48,78 @@ class ChatSessionTests(unittest.TestCase):
         result = self.session._dispatch_tool("read_file", '{"path": "/etc/passwd"}')
         self.assertIn("error", result)
 
-    def test_unknown_write_tool_is_never_dispatched(self) -> None:
-        result = self.session._dispatch_tool("write_file", '{"path":"x","content":"bad"}')
+    def test_unknown_tool_is_never_dispatched(self) -> None:
+        result = self.session._dispatch_tool("delete_file", '{"path":"x"}')
         self.assertIn("unknown tool", result["error"])
+
+    def test_write_file_tool_creates_file(self) -> None:
+        payload = '{"path": "new_file.txt", "content": "hello world"}'
+        result = self.session._dispatch_tool("write_file", payload)
+        self.assertIn("result", result)
+        self.assertTrue((self.root / "new_file.txt").exists())
+        self.assertEqual((self.root / "new_file.txt").read_text(encoding="utf-8"), "hello world")
+
+    def test_write_file_tool_refuses_outside_repo(self) -> None:
+        result = self.session._dispatch_tool(
+            "write_file", '{"path": "/etc/danger.txt", "content": "danger"}'
+        )
+        self.assertIn("error", result)
+
+    def test_edit_file_tool_modifies_file(self) -> None:
+        payload = (
+            '{"path": "parser.py", "target": "def parse_widget", '
+            '"replacement": "def custom_widget"}'
+        )
+        result = self.session._dispatch_tool("edit_file", payload)
+        self.assertIn("result", result)
+        self.assertIn("custom_widget", (self.root / "parser.py").read_text(encoding="utf-8"))
+
+    def test_edit_file_tool_fails_if_target_not_found(self) -> None:
+        payload = (
+            '{"path": "parser.py", "target": "missing_token", "replacement": "new_token"}'
+        )
+        result = self.session._dispatch_tool("edit_file", payload)
+        self.assertIn("error", result)
+
+    def test_execute_command_tool_confirmed(self) -> None:
+        session = ChatSession(
+            object(),  # type: ignore[arg-type]
+            self.root,
+            on_confirm_command=lambda cmd, cwd: True,
+        )
+        result = session._dispatch_tool("execute_command", '{"command": "echo test_ok"}')
+        self.assertIn("result", result)
+        self.assertEqual(result["result"]["returncode"], 0)
+        self.assertIn("test_ok", result["result"]["stdout"])
+
+    def test_execute_command_tool_rejected(self) -> None:
+        session = ChatSession(
+            object(),  # type: ignore[arg-type]
+            self.root,
+            on_confirm_command=lambda cmd, cwd: False,
+        )
+        result = session._dispatch_tool("execute_command", '{"command": "echo test_fail"}')
+        self.assertIn("error", result)
+        self.assertIn("rejected", result["error"])
+
+    def test_plan_turn_creates_tasks_in_manager(self) -> None:
+        manager = mock.MagicMock()
+        created_task = mock.MagicMock(id=1, title="Step 1: Test", status="pending")
+        manager.database.create_task.return_value = created_task
+
+        plan_output = (
+            "Here is the plan:\n"
+            "```json\n"
+            '[{"title": "Step 1: Test", "description": "Execute test"}]\n'
+            "```"
+        )
+        with mock.patch.object(self.session, "run_turn", return_value=plan_output):
+            answer, tasks = self.session.plan_turn("Test goal", manager=manager)
+            self.assertEqual(answer, plan_output)
+            self.assertEqual(tasks, [created_task])
+            manager.database.create_task.assert_called_once_with(
+                title="Step 1: Test", description="Execute test"
+            )
 
     def test_invalid_and_extra_tool_arguments_are_rejected(self) -> None:
         malformed = self.session._dispatch_tool("read_file", "not json")

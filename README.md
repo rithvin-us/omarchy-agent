@@ -10,12 +10,13 @@
 
 ## Key Features
 
-- **Interactive Local AI Chat (`loc`)**: Context-aware terminal chat interface powered by local inference models (e.g. Qwen, Llama via LocalAI). Features streaming output, markdown formatting, turn management, and bounded repository tools.
-- **Auditable Host Inspection Bridges**: Read-only bridges for filesystem traversal, Git status and history, hardware telemetry (CPU, GPU, memory, disks), and running processes.
-- **Security by Construction**: Strict workspace path policy (`PathPolicy`) that prevents directory traversal, symlink escapes, and access to sensitive/credential files (`.env`, SSH keys, `.git`, certificates).
+- **Interactive Local AI Chat (`loc`)**: Context-aware terminal chat interface powered by local inference models (e.g. Qwen, Llama via LocalAI). Features streaming output, markdown formatting, turn management, tool calling (read/write/edit files, shell execution with human confirmation), and `/plan` goal decomposition.
+- **Auditable Host & Workspace Bridges**: Hardened bridges for filesystem read/write/edit, command execution in workspace roots, Git status and history, hardware telemetry (CPU, GPU, memory, disks), and running processes.
+- **Remote Access Server (`serve`)**: Lightweight standard library HTTP/SSE streaming server with Bearer token authentication, ready for subdomain reverse proxies (e.g., Caddy, Nginx, Cloudflare Tunnel).
+- **Security by Construction**: Strict workspace path policy (`PathPolicy`) that prevents directory traversal, symlink escapes, and access to sensitive/credential files (`.env`, SSH keys, `.git`, certificates). Commands require interactive user approval.
 - **Immutable Permission Model**: Centralized capability matrix (`CapabilityState`: `ALLOWED`, `NOT_IMPLEMENTED`, `DENIED`) enforcing non-negotiable boundaries (no privilege escalation, no shell-injection paths, no public network binding).
 - **Persistent Memory & Task Engine**: Structured SQLite storage with schema versioning, WAL mode, transaction isolation, and automatic redaction of sensitive credentials.
-- **Lightweight & Modular**: Built on Python standard library foundations (`sqlite3`, `urllib`, `subprocess`, `pathlib`, `dataclasses`) with `rich` for terminal UI presentation.
+- **Lightweight & Modular**: Built on Python standard library foundations (`sqlite3`, `urllib`, `subprocess`, `pathlib`, `http.server`) with `rich` for terminal UI presentation. Zero added external dependencies.
 
 ---
 
@@ -26,22 +27,25 @@ omarchy-agent/
 ├── omarchy_agent/
 │   ├── cli.py                  # Command-line interface and dispatchers
 │   ├── core/
-│   │   ├── chat.py             # Chat session orchestrator and tool dispatch
+│   │   ├── chat.py             # Chat session orchestrator, tool dispatch, /plan
 │   │   ├── terminal_ui.py      # Terminal UI renderer and activity indicators
 │   │   └── task_manager.py     # High-level task and storage controller
 │   ├── bridge/
-│   │   ├── filesystem.py       # Safe read-only filesystem operations
+│   │   ├── filesystem.py       # Safe filesystem operations (read, write, edit)
+│   │   ├── terminal.py         # Audited shell command execution with timeout
 │   │   ├── git.py              # Safe Git inspection bridge (hardened argv)
 │   │   └── system.py           # System, hardware, and OS telemetry
 │   ├── integrations/
 │   │   └── localai.py          # Loopback-only LocalAI client and streaming engine
 │   ├── memory/
 │   │   └── database.py         # SQLite database schema, migrations, and CRUD
+│   ├── remote/
+│   │   └── server.py           # Token-authenticated HTTP/SSE remote server
 │   └── security/
 │       ├── paths.py            # Path containment, symlink checking, secret refusal
 │       ├── permissions.py      # Central capability and permission policies
 │       └── audit.py            # Redacting audit logger and function decorator
-├── tests/                      # Hermetic unit test suite (298 tests)
+├── tests/                      # Hermetic unit test suite (330 tests)
 └── pyproject.toml              # Build configuration and project metadata
 ```
 
@@ -106,8 +110,23 @@ omarchy-agent chat --root ~/Projects/omarchy-agent --model qwen3.8-4b-q4
 In-chat commands:
 - `/help`: Display chat instructions and available tool capabilities.
 - `/files`: List files utilized as context in the previous turn.
+- `/plan <goal>`: Decompose a goal into numbered steps and record tasks in the SQLite database.
 - `/clear`: Clear message history and reset context window.
 - `/exit`: Terminate session.
+
+### 4. Remote Access Server
+
+Start the token-authenticated remote server (ideal for reverse proxies such as Caddy or Cloudflare Tunnel):
+
+```bash
+# Start server on 127.0.0.1:8443 with a custom token
+omarchy-agent serve --port 8443 --token my-secret-token
+
+# Available endpoints:
+# GET  /api/health - Health check, model info, and workspace root
+# GET  /api/tasks  - List all tasks stored in the database
+# POST /api/chat   - Submit prompts with optional SSE streaming (stream: true)
+```
 
 ---
 
@@ -120,7 +139,8 @@ In-chat commands:
 | `system` | Inspect CPU, memory, filesystem volumes, GPU (via `nvidia-smi`), and processes | No |
 | `models` | List installed LocalAI models and endpoint latency | No |
 | `capabilities` | Display the central capability state matrix | No |
-| `chat` | Start interactive context-bounded chat session (`loc`) | No |
+| `chat` | Start interactive chat with tool calling and `/plan` (`loc`) | File/Cmd (Prompted) |
+| `serve` | Run token-authenticated HTTP/SSE server for remote access | No |
 | `files` | Bounded workspace search and inspection (`list`, `read`, `info`, `search`) | No |
 | `git` | Safe repository inspection (`status`, `branch`, `log`, `diff`) | No |
 | `tasks` | View, add, or transition task statuses (`--create`, `--complete`) | Database |

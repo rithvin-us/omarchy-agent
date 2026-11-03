@@ -10,10 +10,12 @@ from omarchy_agent.bridge.filesystem import (
     BinaryFileRejected,
     FilesystemError,
     FileTooLarge,
+    edit_file,
     get_file_info,
     list_directory,
     read_file,
     search_files,
+    write_file,
 )
 from omarchy_agent.security.audit import AuditLogger, get_audit_logger, set_audit_logger
 from omarchy_agent.security.paths import PathPolicy, PathSecurityError
@@ -329,6 +331,63 @@ class SearchFilesTests(FilesystemBridgeTestCase):
         self.assertTrue(lines)
         for line in lines:
             self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz123456", line)
+
+
+class WriteFileTests(FilesystemBridgeTestCase):
+    def test_creates_new_file_and_parent_directories(self) -> None:
+        target = self.root / "sub" / "nested" / "hello.py"
+        res = write_file(target, "print('hello')", policy=self.policy)
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_text(encoding="utf-8"), "print('hello')")
+        self.assertTrue(res.created)
+        self.assertEqual(res.bytes_written, len("print('hello')"))
+        self.assertEqual(res.lines_written, 1)
+
+    def test_overwrites_existing_file(self) -> None:
+        target = self.root / "src" / "main.py"
+        res = write_file(target, "new content", policy=self.policy, overwrite=True)
+        self.assertEqual(target.read_text(encoding="utf-8"), "new content")
+        self.assertFalse(res.created)
+
+    def test_refuses_overwrite_when_false(self) -> None:
+        target = self.root / "src" / "main.py"
+        with self.assertRaises(FilesystemError):
+            write_file(target, "blocked", policy=self.policy, overwrite=False)
+
+    def test_refuses_write_outside_workspace(self) -> None:
+        with self.assertRaises(PathSecurityError):
+            write_file(self.outside / "leak.txt", "content", policy=self.policy)
+
+    def test_refuses_write_to_sensitive_file(self) -> None:
+        with self.assertRaises(PathSecurityError):
+            write_file(self.root / ".env", "SECRET=1", policy=self.policy)
+
+
+class EditFileTests(FilesystemBridgeTestCase):
+    def test_replaces_single_match(self) -> None:
+        target = self.root / "src" / "main.py"
+        res = edit_file(target, "omarchy", "omarchy-os", policy=self.policy)
+        self.assertIn("omarchy-os", target.read_text(encoding="utf-8"))
+        self.assertNotIn("print('omarchy')", target.read_text(encoding="utf-8"))
+        self.assertEqual(res.action, "edit")
+
+    def test_fails_when_target_not_found(self) -> None:
+        target = self.root / "src" / "main.py"
+        with self.assertRaises(FilesystemError) as raised:
+            edit_file(target, "nonexistent", "replacement", policy=self.policy)
+        self.assertIn("not found", str(raised.exception))
+
+    def test_fails_when_target_matches_multiple_times(self) -> None:
+        target = self.root / "dup.txt"
+        target.write_text("repeat repeat repeat", encoding="utf-8")
+        with self.assertRaises(FilesystemError) as raised:
+            edit_file(target, "repeat", "once", policy=self.policy)
+        self.assertIn("occurred 3 times", str(raised.exception))
+
+    def test_fails_when_target_is_empty(self) -> None:
+        target = self.root / "src" / "main.py"
+        with self.assertRaises(FilesystemError):
+            edit_file(target, "", "bad", policy=self.policy)
 
 
 if __name__ == "__main__":

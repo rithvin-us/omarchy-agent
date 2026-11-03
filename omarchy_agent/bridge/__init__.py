@@ -5,6 +5,6 @@ dataclass result, so a later milestone can expose the same functions over MCP
 without touching their implementation.
 """
 
-from . import filesystem, git, system
+from . import filesystem, git, system, terminal
 
-__all__ = ["filesystem", "git", "system"]
+__all__ = ["filesystem", "git", "system", "terminal"]

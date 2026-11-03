@@ -180,13 +180,16 @@ class PermissionPolicyTests(unittest.TestCase):
             Capability.FS_READ,
             Capability.FS_LIST,
             Capability.FS_SEARCH,
+            Capability.FS_WRITE,
             Capability.SYSTEM_INFO,
             Capability.GIT_INSPECT,
             Capability.LOCALAI_INSPECT,
             Capability.LOCALAI_INFERENCE,
+            Capability.TERMINAL_EXEC,
             Capability.MEMORY_WRITE,
             Capability.TASK_WRITE,
             Capability.AUDIT_WRITE,
+            Capability.REMOTE_ACCESS,
         ):
             with self.subTest(capability=capability):
                 self.assertTrue(self.policy.is_allowed(capability))
@@ -194,12 +197,12 @@ class PermissionPolicyTests(unittest.TestCase):
 
     def test_planned_capabilities_raise_not_implemented(self) -> None:
         for capability in (
-            Capability.TERMINAL_EXEC,
-            Capability.FS_WRITE,
             Capability.FS_DELETE,
             Capability.BROWSER_CONTROL,
             Capability.DESKTOP_INPUT,
             Capability.DESKTOP_SCREENSHOT,
+            Capability.APP_MANAGE,
+            Capability.SCHEDULE_WRITE,
         ):
             with self.subTest(capability=capability):
                 self.assertFalse(self.policy.is_allowed(capability))
@@ -222,9 +225,7 @@ class PermissionPolicyTests(unittest.TestCase):
 
     def test_denied_is_not_reported_as_not_implemented(self) -> None:
         self.assertIs(self.policy.state_of(Capability.DOCKER_CONTROL), CapabilityState.DENIED)
-        self.assertIs(
-            self.policy.state_of(Capability.TERMINAL_EXEC), CapabilityState.NOT_IMPLEMENTED
-        )
+        self.assertIs(self.policy.state_of(Capability.FS_DELETE), CapabilityState.NOT_IMPLEMENTED)
 
     def test_every_capability_has_a_state(self) -> None:
         inventory = self.policy.inventory()
@@ -335,15 +336,15 @@ class AuditLoggerTests(unittest.TestCase):
         self.assertEqual(entry.capability, Capability.PACKAGE_INSTALL.value)
 
     def test_not_implemented_capability_is_recorded_as_denied(self) -> None:
-        @audited("test.exec", Capability.TERMINAL_EXEC)
-        def execute(command: str) -> None:  # pragma: no cover - must never run
+        @audited("test.delete", Capability.FS_DELETE)
+        def execute(path: str) -> None:  # pragma: no cover - must never run
             raise AssertionError("the planned function body executed")
 
         with self.assertRaises(CapabilityNotImplemented):
-            execute("rm -rf /")
+            execute("/tmp/foo")
         entry = self.logger.entries()[-1]
         self.assertEqual(entry.status, "denied")
-        self.assertEqual(entry.arguments["command"], "rm -rf /")
+        self.assertEqual(entry.arguments["path"], "/tmp/foo")
 
     def test_secret_arguments_are_redacted_in_the_log(self) -> None:
         @audited("test.login", Capability.SYSTEM_INFO)
