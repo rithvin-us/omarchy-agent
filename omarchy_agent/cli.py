@@ -569,6 +569,37 @@ def command_voice(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def command_tui(args: argparse.Namespace) -> int:
+    """Full-screen Textual UI; voice is optional and degrades cleanly."""
+    try:
+        from .tui.app import AgentTUI
+    except ImportError:
+        print("TUI extras missing: uv sync --extra tui", file=sys.stderr)
+        return EXIT_ERROR
+    transcriber = speaker = record = None
+    try:
+        from .voice.audio import record_utterance
+        from .voice.engine import Speaker, Transcriber
+
+        transcriber, speaker, record = Transcriber(), Speaker(), record_utterance
+    except ImportError:
+        pass
+    try:
+        manager = _open_manager(args, mirror_audit=True)
+    except Exception:  # noqa: BLE001 - the TUI works without memory
+        manager = None
+    repo_root = Path(args.root or Path.cwd()).expanduser().resolve()
+    try:
+        client = LocalAIClient(getattr(args, "endpoint", DEFAULT_BASE_URL))
+        session = ChatSession(client, repo_root, model=args.model, memory=manager)
+        client.resolve_model_id(args.model)
+    except (LocalAIError, OSError, ValueError, PathSecurityError) as exc:
+        print(f"tui failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    AgentTUI(session, transcriber=transcriber, speaker=speaker, record=record).run()
+    return EXIT_OK
+
+
 def command_serve(args: argparse.Namespace) -> int:
     """Run the token-authenticated remote access HTTP server."""
     endpoint = getattr(args, "endpoint", DEFAULT_BASE_URL)
@@ -1113,6 +1144,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint", default=argparse.SUPPRESS, help="LocalAI loopback API base URL"
     )
     chat_parser.set_defaults(handler=command_chat)
+
+    tui_parser = subparsers.add_parser("tui", help="full-screen terminal UI with local voice")
+    tui_parser.add_argument("--root", default=None, help="repository directory (default: cwd)")
+    tui_parser.add_argument("--model", default=DEFAULT_CHAT_MODEL, help="LocalAI model ID")
+    tui_parser.add_argument("--endpoint", default=argparse.SUPPRESS, help="LocalAI API base URL")
+    tui_parser.set_defaults(handler=command_tui)
 
     voice_parser = subparsers.add_parser(
         "voice", help="hands-free voice chat (local Whisper + Piper)"
