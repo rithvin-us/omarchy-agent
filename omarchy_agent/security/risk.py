@@ -19,6 +19,7 @@ class RiskLevel(IntEnum):
 
 TOOL_RISK: dict[str, RiskLevel] = {
     "browser_open": RiskLevel.GREEN,
+    "web_search": RiskLevel.GREEN,
     "browser_snapshot": RiskLevel.GREEN,
     "browser_screenshot": RiskLevel.GREEN,
     "browser_click": RiskLevel.ORANGE,

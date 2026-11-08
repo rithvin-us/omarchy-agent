@@ -215,3 +215,35 @@ class BrowserToolTests(unittest.TestCase):
         with self.assertRaises(BrowserError):
             validate_url("file:///etc/passwd")
         self.assertEqual(validate_url("https://example.com"), "https://example.com")
+
+
+class ContextBudgetTests(unittest.TestCase):
+    def _session(self) -> ChatSession:
+        return ChatSession(object(), ".")  # type: ignore[arg-type]
+
+    def test_history_is_trimmed_to_budget_without_orphaning_tool_results(self) -> None:
+        s = self._session()
+        for i in range(6):
+            s.messages.append({"role": "user", "content": f"q{i} " + "x" * 2500})
+            s.messages.append(
+                {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{i}"}]}
+            )
+            s.messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": "y" * 3000})
+        s._trim_history()
+        self.assertLessEqual(s._size(), s._message_budget_chars(True))
+        self.assertEqual(s.messages[0]["role"], "system")
+        self.assertNotEqual(s.messages[1]["role"], "tool")  # never starts mid tool-exchange
+
+    def test_single_oversized_turn_is_truncated(self) -> None:
+        s = self._session()
+        s.messages.append({"role": "user", "content": "go"})
+        s.messages.append({"role": "tool", "tool_call_id": "c", "content": "z" * 40_000})
+        s._trim_history()
+        self.assertLessEqual(s._size(), s._message_budget_chars(True))
+
+    def test_tool_budget_leaves_room_for_answer(self) -> None:
+        from omarchy_agent.core import chat as chat_module
+
+        s = self._session()
+        total = s._message_budget_chars(True) // 3 + len(str(chat_module.AGENT_TOOLS)) // 3
+        self.assertLess(total, chat_module.CONTEXT_TOKENS - chat_module.ANSWER_TOKENS)

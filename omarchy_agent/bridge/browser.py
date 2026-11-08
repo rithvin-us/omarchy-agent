@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import tempfile
+import urllib.parse
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+BLOCK_PATTERNS = re.compile(
+    r"unusual traffic|i'?m not a robot|recaptcha|verify you are (a )?human|captcha|"
+    r"access denied|are you a robot",
+    re.IGNORECASE,
+)
 MAX_TEXT_CHARS = 6_000
 MAX_LINKS = 25
 NAV_TIMEOUT_MS = 20_000
@@ -105,13 +112,62 @@ class BrowserController:
             )
         except Exception as exc:  # noqa: BLE001
             raise BrowserError(f"snapshot failed: {exc}") from exc
-        return {
+        snapshot: dict[str, Any] = {
             "url": page.url,
             "title": page.title(),
             "text": text[:MAX_TEXT_CHARS],
             "truncated": len(text) > MAX_TEXT_CHARS,
             "links": links[:MAX_LINKS],
         }
+        if BLOCK_PATTERNS.search(text[:2000]) or "/sorry/" in page.url:
+            snapshot["blocked"] = True
+            snapshot["note"] = (
+                "Site blocked automation (CAPTCHA). Do not retry this site. Use web_search, "
+                "another site, or open_url so the user can solve it in their own browser."
+            )
+        return snapshot
+
+    def search(self, query: str, limit: int = 8) -> dict[str, Any]:
+        """Web search via DuckDuckGo's HTML endpoint (Google blocks automation)."""
+        page = self._ensure_page()
+        url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query[:300]})
+        try:
+            page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            rows = page.eval_on_selector_all(
+                ".result",
+                "els => els.slice(0, 15).map(e => {"
+                " const a = e.querySelector('a.result__a');"
+                " const s = e.querySelector('.result__snippet');"
+                " return a ? {title: a.innerText.trim(), href: a.href,"
+                " snippet: s ? s.innerText.trim() : ''} : null}).filter(Boolean)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise BrowserError(f"search failed: {exc}") from exc
+        results = []
+        for row in rows:
+            href = row["href"]
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+            if "uddg" in qs:  # DuckDuckGo redirect wrapper
+                href = qs["uddg"][0]
+            if href.startswith("http") and "duckduckgo.com/y.js" not in href:
+                results.append(
+                    {"title": row["title"][:150], "url": href, "snippet": row["snippet"][:300]}
+                )
+        if not results:
+            blocked = bool(BLOCK_PATTERNS.search(page.inner_text("body")[:2000]))
+            return {
+                "query": query,
+                "results": [],
+                "blocked": blocked,
+                "search_url": url.replace("html.duckduckgo.com/html/", "duckduckgo.com/"),
+                "note": (
+                    "Search engine challenged the automated browser (not bypassed). "
+                    "Call open_url with search_url so the user sees results in their own browser."
+                    if blocked
+                    else "no results"
+                ),
+            }
+        return {"query": query, "results": results[:limit]}
 
     def click(self, target: str) -> dict[str, Any]:
         """Click by CSS selector, or by visible text when prefixed with ``text=``."""
