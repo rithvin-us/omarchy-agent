@@ -201,3 +201,20 @@ ruff format --check .
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+
+## Local voice, TUI, Google, memory
+
+```bash
+uv sync --extra voice --extra tui          # Python 3.13 (see .python-version)
+uv run omarchy-agent tui                   # F2 talk, ctrl+s speak replies, y/n approvals
+uv run omarchy-agent voice                 # hands-free; spoken "yes" approves
+uv run omarchy-agent google-login          # Gmail (read) + Calendar; needs
+                                           # ~/.config/omarchy-agent/google_client.json
+uv run omarchy-agent serve                 # web client + API; see docs/REMOTE_GUIDE.md
+```
+
+Speech-to-text (faster-whisper `small.en`) and text-to-speech (Piper) run locally; models
+live in `~/.local/share/omarchy-agent/`. Tools are risk-tiered (`security/risk.py`):
+GREEN/YELLOW run freely, ORANGE/RED always ask. Long-term memory tools: `remember`,
+`recall`, `forget`.

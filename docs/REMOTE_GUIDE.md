@@ -342,3 +342,36 @@ To keep the remote server running persistently in the background:
    systemctl --user status omarchy-remote.service
    ```
 
+
+---
+
+## Chosen tunnel: Tailscale Serve (private HTTPS)
+
+Decision: use Tailscale. The agent stays bound to loopback; Tailscale terminates HTTPS
+(needed for the browser mic button) and only your own tailnet devices can reach it.
+Nothing is exposed to the public internet.
+
+```bash
+# one-time (Arch/Omarchy)
+sudo pacman -S tailscale && sudo systemctl enable --now tailscaled
+sudo tailscale up                      # log in; install the app on your phone too
+
+# every time
+omarchy-agent serve --port 8443        # prints the token
+tailscale serve --bg 8443              # https://<machine>.<tailnet>.ts.net/
+```
+
+Open on the phone: `https://<machine>.<tailnet>.ts.net/#token=<TOKEN>`. The page strips
+the token from the URL after loading. Stop sharing with `tailscale serve reset`.
+
+Do NOT use `tailscale funnel` (public) unless you accept the bearer token being the only
+protection.
+
+## Web client and remote approvals
+
+`GET /` serves a single-page client: streaming chat, a mic button (local Whisper via
+`POST /api/transcribe`), and a "speak" toggle (local Piper via `POST /api/speak`).
+
+ORANGE/RED tool calls (calendar create/delete, browser click/type, forget, shell commands)
+raise an approval. The page shows an Approve/Deny bar; the API is `GET /api/approvals`
+and `POST /api/approvals/<id>` with `{"approve": true|false}`. No answer in 120 s = denied.
