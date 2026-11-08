@@ -41,6 +41,8 @@ tui = [
 [project.scripts]
 omarchy-agent = "omarchy_agent.cli:main"
 loc = "omarchy_agent.cli:chat_main"
+oa = "omarchy_agent.cli:tui_main"
+oa-voice = "omarchy_agent.cli:voice_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["omarchy_agent"]

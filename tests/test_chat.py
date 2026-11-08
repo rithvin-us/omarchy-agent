@@ -52,9 +52,33 @@ class ChatSessionTests(unittest.TestCase):
         result = self.session._dispatch_tool("delete_file", '{"path":"x"}')
         self.assertIn("unknown tool", result["error"])
 
+    def _approving_session(self) -> ChatSession:
+        return ChatSession(object(), self.root, on_confirm_command=lambda *_: True)  # type: ignore[arg-type]
+
+    def test_write_and_edit_are_refused_without_approval(self) -> None:
+        write = self.session._dispatch_tool("write_file", '{"path": "n.txt", "content": "x"}')
+        edit = self.session._dispatch_tool(
+            "edit_file", '{"path": "parser.py", "target": "def parse_widget", "replacement": "y"}'
+        )
+        self.assertIn("rejected", write["error"])
+        self.assertIn("rejected", edit["error"])
+        self.assertFalse((self.root / "n.txt").exists())
+        self.assertIn("parse_widget", (self.root / "parser.py").read_text(encoding="utf-8"))
+
+    def test_approval_prompt_does_not_leak_file_body(self) -> None:
+        seen: list[str] = []
+        session = ChatSession(
+            object(),  # type: ignore[arg-type]
+            self.root,
+            on_confirm_command=lambda text, _cwd: seen.append(text) or False,
+        )
+        session._dispatch_tool("write_file", '{"path": "n.txt", "content": "SECRETBODY"}')
+        self.assertIn("n.txt", seen[0])
+        self.assertNotIn("SECRETBODY", seen[0])
+
     def test_write_file_tool_creates_file(self) -> None:
         payload = '{"path": "new_file.txt", "content": "hello world"}'
-        result = self.session._dispatch_tool("write_file", payload)
+        result = self._approving_session()._dispatch_tool("write_file", payload)
         self.assertIn("result", result)
         self.assertTrue((self.root / "new_file.txt").exists())
         self.assertEqual((self.root / "new_file.txt").read_text(encoding="utf-8"), "hello world")
@@ -70,7 +94,7 @@ class ChatSessionTests(unittest.TestCase):
             '{"path": "parser.py", "target": "def parse_widget", '
             '"replacement": "def custom_widget"}'
         )
-        result = self.session._dispatch_tool("edit_file", payload)
+        result = self._approving_session()._dispatch_tool("edit_file", payload)
         self.assertIn("result", result)
         self.assertIn("custom_widget", (self.root / "parser.py").read_text(encoding="utf-8"))
 

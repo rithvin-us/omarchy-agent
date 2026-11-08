@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..bridge import browser as browser_bridge
+from ..bridge import desktop as desktop_bridge
 from ..bridge import filesystem as fs_bridge
 from ..bridge import git as git_bridge
 from ..bridge import terminal as terminal_bridge
@@ -214,6 +215,41 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         "Delete one stored memory by category and key. Requires user approval.",
         {"category": {"type": "string"}, "key": {"type": "string"}},
         ["category", "key"],
+    ),
+    _tool(
+        "open_url",
+        "Open an http(s) URL as a new tab in the user's real, visible browser.",
+        {"url": {"type": "string"}},
+        ["url"],
+    ),
+    _tool(
+        "browser_tab",
+        "Manage tabs in the automated browser window: action new|list|switch|close.",
+        {
+            "action": {"type": "string", "enum": ["new", "list", "switch", "close"]},
+            "index": {"type": "integer", "minimum": 0},
+            "url": {"type": "string"},
+        },
+        ["action"],
+    ),
+    _tool(
+        "open_app",
+        "Launch an installed desktop application in a new window by name. Requires approval.",
+        {"name": {"type": "string"}},
+        ["name"],
+    ),
+    _tool(
+        "open_file",
+        "Open a file or folder inside the repository with its default app. Requires approval.",
+        {"path": {"type": "string"}},
+        ["path"],
+    ),
+    _tool("list_windows", "List the user's open desktop windows (Hyprland).", {}, []),
+    _tool(
+        "focus_window",
+        "Bring a window to the front by its address from list_windows.",
+        {"address": {"type": "string"}},
+        ["address"],
     ),
 ]
 READ_ONLY_TOOLS = AGENT_TOOLS
@@ -509,7 +545,7 @@ class ChatSession:
             return {"error": "tool arguments must be a JSON object"}
         if name in TOOL_RISK and needs_approval(name):
             approved = self.on_confirm_command is not None and self.on_confirm_command(
-                f"[{risk_of(name).name}] {name} {raw_arguments}", self.repo_root
+                f"[{risk_of(name).name}] {_approval_summary(name, arguments)}", self.repo_root
             )
             if not approved:
                 return {"error": "tool call was rejected by user confirmation"}
@@ -644,6 +680,32 @@ class ChatSession:
                             _require_string(arguments, "key"),
                         )
                     }
+            elif name == "open_url":
+                _require_keys(arguments, {"url"})
+                result = desktop_bridge.open_url(_require_string(arguments, "url"))
+            elif name == "browser_tab":
+                _require_keys(arguments, {"action"}, optional={"index", "url"})
+                idx = arguments.get("index")
+                if idx is not None and (not isinstance(idx, int) or isinstance(idx, bool)):
+                    raise ValueError("index must be an integer")
+                tab_url = arguments.get("url")
+                if tab_url is not None and not isinstance(tab_url, str):
+                    raise ValueError("url must be a string")
+                result = self.browser.tab(_require_string(arguments, "action"), idx, tab_url)
+            elif name == "open_app":
+                _require_keys(arguments, {"name"})
+                result = desktop_bridge.open_app(_require_string(arguments, "name"))
+            elif name == "open_file":
+                _require_keys(arguments, {"path"})
+                target = self._repo_path(_require_string(arguments, "path"))
+                self.policy.resolve_within_roots(target)
+                result = desktop_bridge.open_file(target)
+            elif name == "list_windows":
+                _require_keys(arguments, set())
+                result = desktop_bridge.list_windows()
+            elif name == "focus_window":
+                _require_keys(arguments, {"address"})
+                result = desktop_bridge.focus_window(_require_string(arguments, "address"))
             elif name == "gmail_search":
                 _require_keys(arguments, {"query"}, optional={"limit"})
                 limit_val = arguments.get("limit", 10)
@@ -725,6 +787,7 @@ class ChatSession:
             terminal_bridge.TerminalError,
             browser_bridge.BrowserError,
             google_client.GoogleAuthError,
+            desktop_bridge.DesktopError,
         ) as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -738,6 +801,20 @@ class ChatSession:
             and sum(len(str(item.get("content", ""))) for item in self.messages) > 24_000
         ):
             del self.messages[1:3]
+
+
+def _approval_summary(name: str, arguments: dict[str, Any]) -> str:
+    """Short human-readable description of a gated call (never the full file body)."""
+    path = str(arguments.get("path", ""))[:200]
+    if name == "write_file":
+        size = len(str(arguments.get("content", "")))
+        mode = "overwrite" if arguments.get("overwrite", True) else "create"
+        return f"write_file {path} ({mode}, {size} chars)"
+    if name == "edit_file":
+        old = str(arguments.get("target", ""))[:80]
+        new = str(arguments.get("replacement", ""))[:80]
+        return f"edit_file {path}: replace {old!r} with {new!r}"
+    return f"{name} {json.dumps(arguments, ensure_ascii=False)[:300]}"
 
 
 def _require_string(arguments: dict[str, Any], name: str) -> str:

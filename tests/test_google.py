@@ -96,3 +96,40 @@ class MemoryToolTests(unittest.TestCase):
         mem.list_memories.return_value = [rec]
         s = ChatSession(mock.Mock(), ".", memory=mem)
         self.assertIn("pref/tz: IST", s._memory_preface())
+
+
+class DesktopToolTests(unittest.TestCase):
+    def test_open_url_rejects_non_http(self) -> None:
+        s = ChatSession(mock.Mock(), ".")
+        out = s._dispatch_tool("open_url", '{"url":"file:///etc/passwd"}')
+        self.assertIn("http", out["error"])
+
+    def test_open_url_spawns_browser_without_shell(self) -> None:
+        s = ChatSession(mock.Mock(), ".")
+        with mock.patch("omarchy_agent.bridge.desktop._spawn") as spawn:
+            out = s._dispatch_tool("open_url", '{"url":"https://example.com"}')
+        self.assertEqual(out["result"]["opened"], "https://example.com")
+        self.assertEqual(spawn.call_args[0][0][-1], "https://example.com")
+
+    def test_open_app_needs_approval_and_resolves_entry(self) -> None:
+        denied = ChatSession(mock.Mock(), ".")._dispatch_tool("open_app", '{"name":"firefox"}')
+        self.assertIn("rejected", denied["error"])
+        s = ChatSession(mock.Mock(), ".", on_confirm_command=lambda *_: True)
+        with (
+            mock.patch("omarchy_agent.bridge.desktop.find_desktop_entry", return_value="firefox"),
+            mock.patch("omarchy_agent.bridge.desktop._spawn") as spawn,
+        ):
+            out = s._dispatch_tool("open_app", '{"name":"firefox"}')
+        self.assertEqual(out["result"], {"launched": "firefox"})
+        self.assertIn("gtk-launch", spawn.call_args[0][0])
+
+    def test_unknown_app_is_an_error(self) -> None:
+        s = ChatSession(mock.Mock(), ".", on_confirm_command=lambda *_: True)
+        with mock.patch("omarchy_agent.bridge.desktop.find_desktop_entry", return_value=None):
+            out = s._dispatch_tool("open_app", '{"name":"zzzz"}')
+        self.assertIn("no installed application", out["error"])
+
+    def test_focus_window_rejects_bad_address(self) -> None:
+        s = ChatSession(mock.Mock(), ".")
+        out = s._dispatch_tool("focus_window", '{"address":"; rm -rf /"}')
+        self.assertIn("address", out["error"])

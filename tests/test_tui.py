@@ -4,7 +4,7 @@ import asyncio
 import unittest
 
 try:
-    from textual.widgets import Input, RichLog
+    from textual.widgets import Input
 
     from omarchy_agent.tui.app import AgentTUI
 
@@ -46,7 +46,7 @@ async def _settle(pilot, predicate, tries=100):
 
 
 def _log_text(app) -> str:
-    return "\n".join(line.text for line in app.query_one(RichLog).lines)
+    return "\n".join(app.transcript)
 
 
 @unittest.skipUnless(HAVE_TEXTUAL, "textual not installed")
@@ -83,5 +83,40 @@ class TuiTests(unittest.TestCase):
                 self.assertTrue(
                     await _settle(pilot, lambda: "echo: spoken words" in _log_text(app))
                 )
+
+        asyncio.run(go())
+
+
+@unittest.skipUnless(HAVE_TEXTUAL, "textual not installed")
+class TuiCommandTests(unittest.TestCase):
+    def test_slash_help_clear_and_unknown(self) -> None:
+        async def go() -> None:
+            app = AgentTUI(FakeSession())
+            async with app.run_test() as pilot:
+                app.query_one(Input).value = "/help"
+                await pilot.press("enter")
+                self.assertTrue(await _settle(pilot, lambda: "Keys" in _log_text(app)))
+                app.query_one(Input).value = "/nope"
+                await pilot.press("enter")
+                self.assertTrue(await _settle(pilot, lambda: "unknown command" in _log_text(app)))
+                app.query_one(Input).value = "/clear"
+                await pilot.press("enter")
+                self.assertTrue(await _settle(pilot, lambda: _log_text(app) == ""))
+
+        asyncio.run(go())
+
+    def test_agent_markdown_is_rendered_not_raw(self) -> None:
+        from textual.widgets import Markdown
+
+        class MdSession(FakeSession):
+            def run_turn(self, question, *, on_delta=None):
+                return "this is **bold** text"
+
+        async def go() -> None:
+            app = AgentTUI(MdSession())
+            async with app.run_test() as pilot:
+                app.query_one(Input).value = "hi"
+                await pilot.press("enter")
+                self.assertTrue(await _settle(pilot, lambda: len(app.query(Markdown)) >= 1))
 
         asyncio.run(go())

@@ -7,6 +7,7 @@ Only http(s) URLs are allowed; file:, chrome:, and other schemes are refused.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -40,8 +41,13 @@ def _find_chromium() -> str | None:
 
 
 class BrowserController:
-    def __init__(self, *, headless: bool = True, screenshot_dir: Path | None = None) -> None:
+    def __init__(self, *, headless: bool | None = None, screenshot_dir: Path | None = None) -> None:
+        if headless is None:
+            forced = os.environ.get("OMARCHY_BROWSER_HEADLESS")
+            has_display = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
+            headless = forced == "1" or (forced != "0" and not has_display)
         self.headless = headless
+        self._context: Any = None
         self.screenshot_dir = screenshot_dir
         self._pw: Any = None
         self._browser: Any = None
@@ -62,7 +68,8 @@ class BrowserController:
             if executable:
                 launch["executable_path"] = executable
             self._browser = self._pw.chromium.launch(**launch)
-            self._page = self._browser.new_page()
+            self._context = self._browser.new_context(no_viewport=not self.headless)
+            self._page = self._context.new_page()
             self._page.set_default_timeout(ACTION_TIMEOUT_MS)
         except Exception as exc:  # noqa: BLE001 - playwright raises its own error types
             self.close()
@@ -74,7 +81,7 @@ class BrowserController:
             if obj is not None:
                 with contextlib.suppress(Exception):
                     getattr(obj, method)()
-        self._pw = self._browser = self._page = None
+        self._pw = self._browser = self._page = self._context = None
 
     # -- actions ---------------------------------------------------------
     def goto(self, url: str) -> dict[str, Any]:
@@ -126,6 +133,38 @@ class BrowserController:
         except Exception as exc:  # noqa: BLE001
             raise BrowserError(f"type failed: {exc}") from exc
         return self.snapshot()
+
+    def tab(self, action: str, index: int | None = None, url: str | None = None) -> dict[str, Any]:
+        """Manage tabs in the automated browser window: new, list, switch, close."""
+        self._ensure_page()
+        pages = self._context.pages
+        if action == "list":
+            return {
+                "tabs": [
+                    {"index": i, "url": p.url, "title": p.title()} for i, p in enumerate(pages)
+                ]
+            }
+        if action == "new":
+            self._page = self._context.new_page()
+            self._page.set_default_timeout(ACTION_TIMEOUT_MS)
+            if url:
+                return self.goto(url)
+        elif action in {"switch", "close"}:
+            if index is None or not 0 <= index < len(pages):
+                raise BrowserError("tab index out of range")
+            if action == "switch":
+                self._page = pages[index]
+                self._page.bring_to_front()
+            else:
+                pages[index].close()
+                remaining = self._context.pages
+                if not remaining:
+                    self._page = self._context.new_page()
+                elif self._page not in remaining:
+                    self._page = remaining[-1]
+        else:
+            raise BrowserError("action must be new, list, switch or close")
+        return {"tabs": [{"index": i, "url": p.url} for i, p in enumerate(self._context.pages)]}
 
     def screenshot(self) -> dict[str, Any]:
         page = self._ensure_page()

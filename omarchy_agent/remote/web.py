@@ -10,7 +10,7 @@ PAGE = r"""<!doctype html>
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 ui-monospace,monospace;
 display:flex;flex-direction:column;height:100dvh}
 #log{flex:1;overflow:auto;padding:12px 16px}
-.m{margin:8px 0;white-space:pre-wrap}.you{color:var(--acc)}.err{color:#f7768e}.sys{color:var(--mut)}
+.m{margin:8px 0;white-space:pre-wrap}.m pre{background:var(--box);padding:8px;overflow:auto}.m code{background:var(--box);padding:0 3px}.you{color:var(--acc)}.err{color:#f7768e}.sys{color:var(--mut)}
 #bar{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--box)}
 #in{flex:1;background:var(--box);color:var(--fg);border:0;padding:10px;font:inherit}
 button{background:var(--box);color:var(--fg);border:0;padding:10px 14px;font:inherit;cursor:pointer}
@@ -28,7 +28,17 @@ const token=new URLSearchParams(location.hash.slice(1)).get("token")||"";
 history.replaceState(null,"",location.pathname);
 const H={Authorization:"Bearer "+token};
 const log=document.getElementById("log"),inp=document.getElementById("in");
-function add(cls,t){const d=document.createElement("div");d.className="m "+cls;d.textContent=t;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+function esc(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function md(t){t=esc(t);
+t=t.replace(/```[a-z]*\n?([\s\S]*?)```/g,(m,c)=>"<pre>"+c+"</pre>");
+t=t.replace(/`([^`\n]+)`/g,"<code>$1</code>");
+t=t.replace(/\*\*([^*\n]+)\*\*/g,"<b>$1</b>");
+t=t.replace(/(^|[\s(])\*([^*\n]+)\*/g,"$1<i>$2</i>");
+t=t.replace(/^#{1,6}\s+(.*)$/gm,"<b>$1</b>");
+t=t.replace(/^[-*]\s+/gm,"• ");return t}
+function setMd(el,t){el.innerHTML=md(t)}
+function add(cls,t){const d=document.createElement("div");d.className="m "+cls;
+if(cls===""){setMd(d,t)}else{d.textContent=t}log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
 if(!token)add("err","No token. Open this page as /#token=YOUR_TOKEN");
 let aid=null;
 async function poll(){try{const r=await fetch("/api/approvals",{headers:H});const j=await r.json();
@@ -45,7 +55,7 @@ const rd=r.body.getReader(),dec=new TextDecoder();let buf="";
 for(;;){const {done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
 let i;while((i=buf.indexOf("\n\n"))>=0){const line=buf.slice(0,i).replace(/^data: /,"");buf=buf.slice(i+2);
 if(line==="[DONE]")continue;let j;try{j=JSON.parse(line)}catch{continue}
-if(j.delta){full+=j.delta;out.textContent=full}if(j.error){add("err","error: "+j.error)}if(j.done&&!full){out.textContent=j.answer;full=j.answer}}}
+if(j.delta){full+=j.delta;setMd(out,full)}if(j.error){add("err","error: "+j.error)}if(j.done){full=j.answer||full;setMd(out,full)}}}
 }catch(e){add("err",String(e))}
 if(full&&document.getElementById("spk").checked)speak(full)}
 async function speak(t){const r=await fetch("/api/speak",{method:"POST",headers:H,body:JSON.stringify({text:t})});

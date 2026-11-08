@@ -527,6 +527,15 @@ def command_google_login(_args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _print_voice_line(role: str, text: str) -> None:
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    console = Console()
+    console.print(f"[bold]{role}:[/bold]")
+    console.print(Markdown(text))
+
+
 def command_voice(args: argparse.Namespace) -> int:
     """Hands-free voice chat: local Whisper in, local Piper out."""
     try:
@@ -557,7 +566,7 @@ def command_voice(args: argparse.Namespace) -> int:
             session,
             transcriber,
             speaker,
-            on_text=lambda role, text: print(f"\033[1m{role}:\033[0m {text}"),
+            on_text=_print_voice_line,
         )
     except (LocalAIError, OSError, ValueError, PathSecurityError, AudioError) as exc:
         print(f"voice failed: {exc}", file=sys.stderr)
@@ -596,7 +605,13 @@ def command_tui(args: argparse.Namespace) -> int:
     except (LocalAIError, OSError, ValueError, PathSecurityError) as exc:
         print(f"tui failed: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    AgentTUI(session, transcriber=transcriber, speaker=speaker, record=record).run()
+    AgentTUI(
+        session,
+        transcriber=transcriber,
+        speaker=speaker,
+        record=record,
+        subtitle=f"{args.model} · {repo_root}",
+    ).run()
     return EXIT_OK
 
 
@@ -643,6 +658,16 @@ def command_serve(args: argparse.Namespace) -> int:
 def chat_main() -> int:
     """Entry point installed as the short ``loc`` command."""
     return main(["chat", *sys.argv[1:]])
+
+
+def tui_main() -> int:
+    """Entry point installed as ``oa`` (full-screen TUI)."""
+    return main(["tui", *sys.argv[1:]])
+
+
+def voice_main() -> int:
+    """Entry point installed as ``oa-voice`` (hands-free voice chat)."""
+    return main(["voice", *sys.argv[1:]])
 
 
 def _open_manager(args: argparse.Namespace, *, mirror_audit: bool = False) -> TaskManager:
