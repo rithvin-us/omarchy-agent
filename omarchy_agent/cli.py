@@ -513,6 +513,19 @@ def command_chat(args: argparse.Namespace) -> int:
             ui.error(exc)
 
 
+def command_google_login(_args: argparse.Namespace) -> int:
+    """Run the local Google OAuth loopback login."""
+    from .google.client import GoogleAuthError, GoogleClient
+
+    try:
+        GoogleClient().login()
+    except GoogleAuthError as exc:
+        print(f"google-login failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print("Google login complete.")
+    return EXIT_OK
+
+
 def command_serve(args: argparse.Namespace) -> int:
     """Run the token-authenticated remote access HTTP server."""
     endpoint = getattr(args, "endpoint", DEFAULT_BASE_URL)
@@ -1021,6 +1034,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "audit", help="show safe environment information and tool availability"
     ).set_defaults(handler=command_audit)
+
+    subparsers.add_parser(
+        "google-login", help="log in to Google (Gmail read, Calendar) via local OAuth"
+    ).set_defaults(handler=command_google_login)
 
     subparsers.add_parser(
         "doctor", help="verify structure, permissions, database and LocalAI connectivity"

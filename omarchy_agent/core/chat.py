@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +13,11 @@ from ..bridge import browser as browser_bridge
 from ..bridge import filesystem as fs_bridge
 from ..bridge import git as git_bridge
 from ..bridge import terminal as terminal_bridge
+from ..google import client as google_client
+from ..google import freetime
 from ..integrations.localai import LocalAIClient, LocalAIError
 from ..security.paths import PathPolicy, default_policy
+from ..security.risk import TOOL_RISK, needs_approval, risk_of
 
 DEFAULT_CHAT_MODEL = "qwen3.8-4b-q4"
 MAX_CONTEXT_CHARS = 12_000
@@ -143,6 +147,52 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         {},
         [],
     ),
+    _tool(
+        "gmail_search",
+        "Search Gmail with native syntax (is:unread, from:x, subject:y). Returns summaries.",
+        {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
+        ["query"],
+    ),
+    _tool(
+        "gmail_read",
+        "Read one Gmail message body by id (from gmail_search).",
+        {"message_id": {"type": "string"}},
+        ["message_id"],
+    ),
+    _tool(
+        "calendar_list",
+        "List Google Calendar events between two ISO-8601 times.",
+        {"time_min": {"type": "string"}, "time_max": {"type": "string"}},
+        ["time_min", "time_max"],
+    ),
+    _tool(
+        "free_time",
+        "Compute free calendar slots between two ISO-8601 times, at least duration_minutes long.",
+        {
+            "time_min": {"type": "string"},
+            "time_max": {"type": "string"},
+            "duration_minutes": {"type": "integer", "minimum": 5, "maximum": 1440},
+            "buffer_minutes": {"type": "integer", "minimum": 0, "maximum": 120},
+        },
+        ["time_min", "time_max", "duration_minutes"],
+    ),
+    _tool(
+        "calendar_create",
+        "Create a calendar event. Requires user approval.",
+        {
+            "summary": {"type": "string"},
+            "start": {"type": "string"},
+            "end": {"type": "string"},
+            "description": {"type": "string"},
+        },
+        ["summary", "start", "end"],
+    ),
+    _tool(
+        "calendar_delete",
+        "Delete a calendar event by id. Destructive; requires user approval.",
+        {"event_id": {"type": "string"}},
+        ["event_id"],
+    ),
 ]
 READ_ONLY_TOOLS = AGENT_TOOLS
 
@@ -170,6 +220,7 @@ class ChatSession:
         self.on_status = on_status or (lambda _message: None)
         self.on_confirm_command = on_confirm_command
         self.browser = browser_bridge.BrowserController()
+        self.google = google_client.GoogleClient()
         self.latest_context_files: list[str] = []
         self.messages: list[dict[str, Any]] = [
             {
@@ -416,6 +467,12 @@ class ChatSession:
             return {"error": "tool arguments were not valid JSON"}
         if not isinstance(arguments, dict):
             return {"error": "tool arguments must be a JSON object"}
+        if name in TOOL_RISK and needs_approval(name):
+            approved = self.on_confirm_command is not None and self.on_confirm_command(
+                f"[{risk_of(name).name}] {name} {raw_arguments}", self.repo_root
+            )
+            if not approved:
+                return {"error": "tool call was rejected by user confirmation"}
         try:
             if name == "list_directory":
                 _require_keys(arguments, {"path"})
@@ -524,6 +581,63 @@ class ChatSession:
             elif name == "browser_screenshot":
                 _require_keys(arguments, set())
                 result = self.browser.screenshot()
+            elif name == "gmail_search":
+                _require_keys(arguments, {"query"}, optional={"limit"})
+                limit_val = arguments.get("limit", 10)
+                if not isinstance(limit_val, int) or isinstance(limit_val, bool):
+                    raise ValueError("limit must be an integer")
+                result = self.google.gmail_search(_require_string(arguments, "query"), limit_val)
+            elif name == "gmail_read":
+                _require_keys(arguments, {"message_id"})
+                result = self.google.gmail_read(_require_string(arguments, "message_id"))
+            elif name == "calendar_list":
+                _require_keys(arguments, {"time_min", "time_max"})
+                result = self.google.calendar_list(
+                    _require_string(arguments, "time_min"), _require_string(arguments, "time_max")
+                )
+            elif name == "free_time":
+                _require_keys(
+                    arguments,
+                    {"time_min", "time_max", "duration_minutes"},
+                    optional={"buffer_minutes"},
+                )
+                dur = arguments.get("duration_minutes")
+                buf = arguments.get("buffer_minutes", 0)
+                if not all(isinstance(v, int) and not isinstance(v, bool) for v in (dur, buf)):
+                    raise ValueError("duration_minutes and buffer_minutes must be integers")
+                tmin = _require_string(arguments, "time_min")
+                tmax = _require_string(arguments, "time_max")
+                events = self.google.calendar_list(tmin, tmax, limit=100)
+                busy = []
+                for event in events:
+                    if "T" in str(event["start"]):  # skip all-day events
+                        busy.append(
+                            (
+                                datetime.fromisoformat(event["start"]),
+                                datetime.fromisoformat(event["end"]),
+                            )
+                        )
+                wstart = datetime.fromisoformat(google_client._rfc3339(tmin))
+                wend = datetime.fromisoformat(google_client._rfc3339(tmax))
+                slots = freetime.calculate_free_slots(busy, wstart, wend, dur, buf)
+                result = [
+                    {"start": x.start.isoformat(), "end": x.end.isoformat(), "minutes": x.minutes}
+                    for x in slots
+                ]
+            elif name == "calendar_create":
+                _require_keys(arguments, {"summary", "start", "end"}, optional={"description"})
+                desc = arguments.get("description", "")
+                if not isinstance(desc, str):
+                    raise ValueError("description must be a string")
+                result = self.google.calendar_create(
+                    _require_string(arguments, "summary"),
+                    _require_string(arguments, "start"),
+                    _require_string(arguments, "end"),
+                    desc,
+                )
+            elif name == "calendar_delete":
+                _require_keys(arguments, {"event_id"})
+                result = self.google.calendar_delete(_require_string(arguments, "event_id"))
             else:
                 _require_keys(arguments, set(), optional={"limit"})
                 limit = arguments.get("limit", 5)
@@ -547,6 +661,7 @@ class ChatSession:
             git_bridge.GitError,
             terminal_bridge.TerminalError,
             browser_bridge.BrowserError,
+            google_client.GoogleAuthError,
         ) as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
