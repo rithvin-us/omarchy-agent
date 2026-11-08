@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..bridge import browser as browser_bridge
 from ..bridge import filesystem as fs_bridge
 from ..bridge import git as git_bridge
 from ..bridge import terminal as terminal_bridge
@@ -108,6 +109,40 @@ AGENT_TOOLS: list[dict[str, Any]] = [
         {"limit": {"type": "integer", "minimum": 1, "maximum": 10}},
         [],
     ),
+    _tool(
+        "browser_open",
+        "Open an http(s) URL in a headless browser. Returns page title, text, and links.",
+        {"url": {"type": "string"}},
+        ["url"],
+    ),
+    _tool(
+        "browser_snapshot",
+        "Return the current browser page title, visible text, and links.",
+        {},
+        [],
+    ),
+    _tool(
+        "browser_click",
+        "Click an element by CSS selector, or 'text=Visible label'. Returns the new page state.",
+        {"target": {"type": "string"}},
+        ["target"],
+    ),
+    _tool(
+        "browser_type",
+        "Fill an input (CSS selector) with text, optionally pressing Enter to submit.",
+        {
+            "selector": {"type": "string"},
+            "text": {"type": "string"},
+            "submit": {"type": "boolean"},
+        },
+        ["selector", "text"],
+    ),
+    _tool(
+        "browser_screenshot",
+        "Save a PNG screenshot of the current browser page and return its path.",
+        {},
+        [],
+    ),
 ]
 READ_ONLY_TOOLS = AGENT_TOOLS
 
@@ -134,6 +169,7 @@ class ChatSession:
         self.model = model
         self.on_status = on_status or (lambda _message: None)
         self.on_confirm_command = on_confirm_command
+        self.browser = browser_bridge.BrowserController()
         self.latest_context_files: list[str] = []
         self.messages: list[dict[str, Any]] = [
             {
@@ -150,6 +186,9 @@ class ChatSession:
                 ),
             }
         ]
+
+    def close(self) -> None:
+        self.browser.close()
 
     def context_for(self, question: str) -> tuple[str, list[str]]:
         """Choose a bounded set of likely relevant files using the safe search bridge."""
@@ -462,6 +501,29 @@ class ChatSession:
                 result = git_bridge.get_diff_summary(
                     self.repo_root, policy=self.policy, staged=staged
                 )
+            elif name == "browser_open":
+                _require_keys(arguments, {"url"})
+                result = self.browser.goto(_require_string(arguments, "url"))
+            elif name == "browser_snapshot":
+                _require_keys(arguments, set())
+                result = self.browser.snapshot()
+            elif name == "browser_click":
+                _require_keys(arguments, {"target"})
+                result = self.browser.click(_require_string(arguments, "target"))
+            elif name == "browser_type":
+                _require_keys(arguments, {"selector", "text"}, optional={"submit"})
+                text_val = arguments.get("text")
+                submit_val = arguments.get("submit", False)
+                if not isinstance(text_val, str) or len(text_val) > 5000:
+                    raise ValueError("text must be a string under 5000 characters")
+                if not isinstance(submit_val, bool):
+                    raise ValueError("submit must be a boolean")
+                result = self.browser.type_text(
+                    _require_string(arguments, "selector"), text_val, submit=submit_val
+                )
+            elif name == "browser_screenshot":
+                _require_keys(arguments, set())
+                result = self.browser.screenshot()
             else:
                 _require_keys(arguments, set(), optional={"limit"})
                 limit = arguments.get("limit", 5)
@@ -484,6 +546,7 @@ class ChatSession:
             fs_bridge.FilesystemError,
             git_bridge.GitError,
             terminal_bridge.TerminalError,
+            browser_bridge.BrowserError,
         ) as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 

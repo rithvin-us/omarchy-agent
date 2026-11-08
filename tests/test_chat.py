@@ -182,3 +182,12 @@ class TerminalUITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrowserToolTests(unittest.TestCase):
+    def test_non_http_url_is_refused(self) -> None:
+        from omarchy_agent.bridge.browser import BrowserError, validate_url
+
+        with self.assertRaises(BrowserError):
+            validate_url("file:///etc/passwd")
+        self.assertEqual(validate_url("https://example.com"), "https://example.com")

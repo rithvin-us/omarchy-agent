@@ -20,7 +20,10 @@ classifiers = [
 ]
 
 # Rich renders Markdown, syntax-highlighted blocks, and live status in the chat CLI.
-dependencies = ["rich>=15,<16"]
+dependencies = [
+    "playwright>=1.64.1",
+    "rich>=15,<16",
+]
 
 [project.optional-dependencies]
 # Optional developer tooling only. Not required to run the agent or its tests.
