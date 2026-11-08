@@ -72,3 +72,27 @@ class GateTests(unittest.TestCase):
         s.google = mock.Mock()
         s.google.gmail_search.return_value = []
         self.assertEqual(s._dispatch_tool("gmail_search", '{"query":"is:unread"}'), {"result": []})
+
+
+class MemoryToolTests(unittest.TestCase):
+    def test_remember_runs_and_forget_needs_approval(self) -> None:
+        mem = mock.Mock()
+        mem.remember.return_value = {"ok": 1}
+        s = ChatSession(mock.Mock(), ".", memory=mem)
+        out = s._dispatch_tool("remember", '{"category":"pref","key":"tz","content":"IST"}')
+        self.assertEqual(out, {"result": {"ok": 1}})
+        denied = s._dispatch_tool("forget", '{"category":"pref","key":"tz"}')
+        self.assertIn("rejected", denied["error"])
+        mem.forget.assert_not_called()
+
+    def test_memory_unavailable_is_an_error_not_a_crash(self) -> None:
+        s = ChatSession(mock.Mock(), ".")
+        out = s._dispatch_tool("recall", '{"query":"x"}')
+        self.assertIn("not available", out["error"])
+
+    def test_preface_lists_memories(self) -> None:
+        rec = mock.Mock(category="pref", key="tz", content="IST")
+        mem = mock.Mock()
+        mem.list_memories.return_value = [rec]
+        s = ChatSession(mock.Mock(), ".", memory=mem)
+        self.assertIn("pref/tz: IST", s._memory_preface())

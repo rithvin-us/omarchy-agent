@@ -29,6 +29,9 @@ TOOL_RISK: dict[str, RiskLevel] = {
     "free_time": RiskLevel.GREEN,
     "calendar_create": RiskLevel.ORANGE,
     "calendar_delete": RiskLevel.RED,
+    "recall": RiskLevel.GREEN,
+    "remember": RiskLevel.YELLOW,
+    "forget": RiskLevel.ORANGE,
 }
 
 

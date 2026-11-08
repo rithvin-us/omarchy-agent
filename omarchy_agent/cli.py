@@ -432,6 +432,7 @@ def command_chat(args: argparse.Namespace) -> int:
             model=args.model,
             on_status=ui.status,
             on_confirm_command=confirm_command,
+            memory=manager,
         )
         model_id = client.resolve_model_id(args.model)
     except (LocalAIError, OSError, ValueError, PathSecurityError) as exc:
@@ -523,6 +524,48 @@ def command_google_login(_args: argparse.Namespace) -> int:
         print(f"google-login failed: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print("Google login complete.")
+    return EXIT_OK
+
+
+def command_voice(args: argparse.Namespace) -> int:
+    """Hands-free voice chat: local Whisper in, local Piper out."""
+    try:
+        from .voice.audio import AudioError
+        from .voice.engine import Speaker, Transcriber
+        from .voice.loop import make_voice_confirm, run_voice_loop
+    except ImportError:
+        print("voice extras missing: uv sync --extra voice", file=sys.stderr)
+        return EXIT_ERROR
+    repo_root = Path(args.root or Path.cwd()).expanduser().resolve()
+    transcriber, speaker = Transcriber(), Speaker()
+    try:
+        manager = _open_manager(args, mirror_audit=True)
+    except Exception:  # noqa: BLE001 - voice works without memory
+        manager = None
+    try:
+        client = LocalAIClient(getattr(args, "endpoint", DEFAULT_BASE_URL))
+        session = ChatSession(
+            client,
+            repo_root,
+            model=args.model,
+            on_status=lambda _m: None,
+            on_confirm_command=make_voice_confirm(speaker, transcriber),
+            memory=manager,
+        )
+        client.resolve_model_id(args.model)
+        run_voice_loop(
+            session,
+            transcriber,
+            speaker,
+            on_text=lambda role, text: print(f"\033[1m{role}:\033[0m {text}"),
+        )
+    except (LocalAIError, OSError, ValueError, PathSecurityError, AudioError) as exc:
+        print(f"voice failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.close() if "session" in locals() else None
     return EXIT_OK
 
 
@@ -1070,6 +1113,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint", default=argparse.SUPPRESS, help="LocalAI loopback API base URL"
     )
     chat_parser.set_defaults(handler=command_chat)
+
+    voice_parser = subparsers.add_parser(
+        "voice", help="hands-free voice chat (local Whisper + Piper)"
+    )
+    voice_parser.add_argument("--root", default=None, help="repository directory (default: cwd)")
+    voice_parser.add_argument("--model", default=DEFAULT_CHAT_MODEL, help="LocalAI model ID")
+    voice_parser.add_argument("--endpoint", default=argparse.SUPPRESS, help="LocalAI API base URL")
+    voice_parser.set_defaults(handler=command_voice)
 
     serve_parser = subparsers.add_parser(
         "serve", help="run token-authenticated HTTP/SSE server for remote access"
