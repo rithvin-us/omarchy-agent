@@ -181,3 +181,27 @@ class RemoteServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalBrokerTests(unittest.TestCase):
+    def test_timeout_denies(self) -> None:
+        from omarchy_agent.remote.approvals import ApprovalBroker
+
+        self.assertFalse(ApprovalBroker(timeout=0.05).request("x"))
+
+    def test_resolve_approves_and_only_once(self) -> None:
+        import threading
+
+        from omarchy_agent.remote.approvals import ApprovalBroker
+
+        broker = ApprovalBroker(timeout=5)
+        result: list[bool] = []
+        t = threading.Thread(target=lambda: result.append(broker.request("do it")))
+        t.start()
+        while not broker.pending():
+            pass
+        pid = broker.pending()[0]["id"]
+        self.assertTrue(broker.resolve(pid, True))
+        t.join(2)
+        self.assertEqual(result, [True])
+        self.assertFalse(broker.resolve(pid, True))

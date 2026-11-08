@@ -55,4 +55,5 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"omarchy_agent/remote/web.py" = ["E501"]
 "tests/*" = ["S101", "S105", "S106", "S108"]
